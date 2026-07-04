@@ -1,0 +1,17 @@
+[
+  {
+    "id": "seed-1",
+    "name": "Protocolo CHOP — Linfoma Canino (exemplo)",
+    "text": "O protocolo CHOP é um dos esquemas quimioterápicos combinados mais utilizados no tratamento do linfoma multicêntrico canino, associando vincristina, ciclofosfamida, doxorrubicina e prednisona em ciclos semanais ao longo de aproximadamente 16 a 25 semanas, variando conforme o protocolo específico adotado pelo serviço.\n\nComo referência didática geral (NÃO usar como dose definitiva sem checar a fonte original e a mentora): vincristina costuma ser administrada na faixa de 0,5 a 0,7 mg/m² IV; ciclofosfamida na faixa de 200 a 250 mg/m² VO ou IV; doxorrubicina na faixa de 30 mg/m² IV para cães acima de 15kg (ajustada para 1 mg/kg em cães pequenos, devido ao risco de cardiotoxicidade). A prednisona geralmente é iniciada em dose imunossupressora e reduzida progressivamente ao longo das semanas.\n\nO monitoramento hematológico antes de cada aplicação é obrigatório, avaliando principalmente a contagem de neutrófilos, para decidir se a dose deve ser mantida, reduzida ou adiada."
+  },
+  {
+    "id": "seed-2",
+    "name": "Interpretação de Hemograma em Paciente Oncológico (exemplo)",
+    "text": "Em pacientes sob quimioterapia, o hemograma seriado é a principal ferramenta para monitorar toxicidade medular. A neutropenia é o achado mais comum e mais relevante clinicamente, geralmente com nadir entre 7 e 10 dias após a aplicação de agentes mielossupressores como a doxorrubicina.\n\nComo guia didático de gravidade: neutropenia leve corresponde a contagens entre 1.000 e 3.000 neutrófilos/µL, geralmente sem necessidade de intervenção além de observação; neutropenia moderada, entre 500 e 1.000/µL, requer atenção e possível adiamento da próxima dose; neutropenia grave, abaixo de 500/µL, associa-se a risco aumentado de sepse e geralmente indica necessidade de suporte com antibioticoterapia profilática e reavaliação do protocolo.\n\nA trombocitopenia e a anemia também devem ser monitoradas, mas costumam ser menos limitantes que a neutropenia na maioria dos protocolos citostáticos convencionais."
+  },
+  {
+    "id": "seed-3",
+    "name": "Estadiamento de Mastocitoma Cutâneo Canino (exemplo)",
+    "text": "O mastocitoma cutâneo canino é classificado histologicamente por sistemas de graduação (como Patnaik ou o sistema de dois graus de Kiupel), que orientam prognóstico, mas o estadiamento clínico é o que determina a extensão da doença.\n\nO estadiamento inclui exame físico completo com palpação de linfonodos regionais, citologia ou histopatologia do linfonodo suspeito, e exames de imagem (ultrassonografia abdominal e radiografia torácica) para avaliar possível envolvimento sistêmico. A citologia aspirativa do linfonodo é essencial mesmo quando ele não está aumentado de tamanho, pois a metástase microscópica pode estar presente sem alteração palpável.\n\nDe forma geral, tumores de baixo grau, sem envolvimento linfonodal ou sistêmico, têm prognóstico significativamente mais favorável do que tumores de alto grau ou com doença disseminada, reforçando a importância do estadiamento completo antes de definir a conduta."
+  }
+]

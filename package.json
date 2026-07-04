@@ -1,0 +1,13 @@
+{
+  "name": "vetonc-whatsapp-bot",
+  "version": "1.0.0",
+  "description": "Bot de WhatsApp para o Console de Mentoria em Oncologia Veterinária",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "dotenv": "^16.4.5"
+  }
+}
