@@ -1,1 +1,145 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Agente Oncoway — Gerenciar Acervo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<style>
+  :root{
+    --paper:#F1F3EE; --card:#FFFFFF; --ink:#1E2A32; --ink-soft:#4B5A61;
+    --navy:#223449; --sage:#5C8374; --sage-dark:#3F5C50; --amber:#B8814A;
+    --alert:#B33F2E; --line:#CBD3C4;
+  }
+  *{box-sizing:border-box;}
+  body{ margin:0; background:var(--paper); color:var(--ink); font-family:'IBM Plex Sans',sans-serif; }
+  .header{ padding:22px 28px 18px; border-bottom:2px solid var(--navy); background:var(--card); }
+  .eyebrow{ font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:2.5px; color:var(--sage-dark); text-transform:uppercase; margin-bottom:6px; }
+  .title{ font-family:'Source Serif 4',serif; font-weight:700; font-size:24px; color:var(--navy); margin:0; }
+  .subtitle{ font-size:13.5px; color:var(--ink-soft); margin-top:4px; }
+  .wrap{ max-width:760px; margin:28px auto; padding:0 20px; }
+  h2{ font-family:'IBM Plex Mono',monospace; font-size:12px; letter-spacing:2px; text-transform:uppercase; color:var(--navy); margin:28px 0 12px; }
+  .doc-card{ background:var(--card); border:1px solid var(--line); border-left:3px solid var(--sage); border-radius:2px; padding:12px 14px; margin-bottom:8px; position:relative; }
+  .doc-card .doc-name{ font-size:14px; font-weight:600; color:var(--navy); }
+  .doc-card .doc-meta{ font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--ink-soft); margin-top:2px; }
+  .doc-card button{ position:absolute; top:12px; right:12px; background:none; border:none; color:var(--alert); font-size:12px; cursor:pointer; font-family:'IBM Plex Mono',monospace; }
+  .panel{ background:var(--card); border:1px solid var(--line); border-radius:4px; padding:18px; }
+  label.upload-btn{ display:inline-block; cursor:pointer; font-family:'IBM Plex Mono',monospace; font-size:12px; text-transform:uppercase; letter-spacing:.5px; background:none; color:var(--sage-dark); border:1px solid var(--sage-dark); border-radius:3px; padding:9px 14px; margin-bottom:12px; }
+  input[type=text], textarea{ width:100%; font-family:'IBM Plex Sans',sans-serif; font-size:14px; padding:10px 12px; border:1px solid var(--line); border-radius:3px; margin-bottom:10px; }
+  textarea{ min-height:140px; resize:vertical; }
+  .btn{ font-family:'IBM Plex Mono',monospace; font-size:12.5px; letter-spacing:.5px; text-transform:uppercase; background:var(--sage-dark); color:#fff; border:none; border-radius:3px; padding:10px 16px; cursor:pointer; }
+  .btn:hover{ background:var(--navy); }
+  .status{ font-family:'IBM Plex Mono',monospace; font-size:11.5px; color:var(--ink-soft); margin-top:8px; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div class="eyebrow">Área restrita · Mentora</div>
+    <h1 class="title">Agente Oncoway — Gerenciar Acervo</h1>
+    <div class="subtitle">Adicione ou remova os materiais consultados pelo assistente (alunos não têm acesso a esta página).</div>
+  </div>
+
+  <div class="wrap">
+    <div class="panel">
+      <label class="upload-btn" for="pdfInput">📄 Enviar PDF ou TXT</label>
+      <input id="pdfInput" type="file" accept=".pdf,.txt" multiple style="display:none;" onchange="handleFileUpload(event)">
+      <div id="uploadStatus" class="status"></div>
+      <div style="font-size:12px; color:var(--ink-soft); margin:10px 0;">Aulas em vídeo/áudio: transcreva primeiro e cole o texto abaixo, ou envie como .txt.</div>
+      <input id="docTitle" type="text" placeholder="Fonte (ex: Aula 4 — Linfoma, ou nome do artigo)">
+      <textarea id="docText" placeholder="Ou cole aqui o texto do artigo, capítulo ou transcrição da aula..."></textarea>
+      <button class="btn" onclick="addDocument()">Salvar no acervo</button>
+    </div>
+
+    <h2>Materiais no acervo</h2>
+    <div id="docList"></div>
+  </div>
+
+<script>
+if(window['pdfjsLib']){
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+}
+
+function escapeHtml(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+async function loadDocs(){
+  const res = await fetch('/api/admin/docs');
+  const docs = await res.json();
+  renderDocs(docs);
+}
+
+function renderDocs(docs){
+  const el = document.getElementById('docList');
+  el.innerHTML = '';
+  if(!docs.length){ el.innerHTML = '<div class="status">Nenhum material no acervo ainda.</div>'; return; }
+  docs.forEach(d=>{
+    const wc = d.text.split(/\s+/).length;
+    const card = document.createElement('div');
+    card.className = 'doc-card';
+    card.innerHTML = `<div class="doc-name">${escapeHtml(d.name)}</div>
+      <div class="doc-meta">${wc} palavras</div>
+      <button onclick="removeDoc('${d.id}')">remover</button>`;
+    el.appendChild(card);
+  });
+}
+
+async function removeDoc(id){
+  const res = await fetch('/api/admin/docs/'+id, { method:'DELETE' });
+  renderDocs(await res.json());
+}
+
+async function addDocument(){
+  const title = document.getElementById('docTitle').value.trim();
+  const text = document.getElementById('docText').value.trim();
+  if(!title || !text){ alert('Preencha o nome da fonte e o texto.'); return; }
+  const res = await fetch('/api/admin/docs', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ name:title, text:text })
+  });
+  renderDocs(await res.json());
+  document.getElementById('docTitle').value = '';
+  document.getElementById('docText').value = '';
+}
+
+async function handleFileUpload(event){
+  const files = Array.from(event.target.files);
+  const status = document.getElementById('uploadStatus');
+  for(const file of files){
+    status.textContent = `Lendo ${file.name}...`;
+    try{
+      let text = '';
+      if(file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')){
+        const buf = await file.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+        let pages = [];
+        for(let i=1;i<=pdf.numPages;i++){
+          const page = await pdf.getPage(i);
+          const content = await page.getTextContent();
+          pages.push(content.items.map(it=>it.str).join(' '));
+        }
+        text = pages.join('\n\n');
+      } else {
+        text = await file.text();
+      }
+      if(text.trim().length < 20){
+        status.textContent = `${file.name}: não consegui extrair texto (pode ser um PDF escaneado/imagem).`;
+        continue;
+      }
+      const res = await fetch('/api/admin/docs', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ name:file.name, text:text })
+      });
+      renderDocs(await res.json());
+      status.textContent = `${file.name} adicionado ao acervo ✓`;
+    }catch(e){
+      status.textContent = `Erro ao ler ${file.name}: ${e.message}`;
+    }
+  }
+  event.target.value = '';
+}
+
+loadDocs();
+</script>
+</body>
+</html>
 
