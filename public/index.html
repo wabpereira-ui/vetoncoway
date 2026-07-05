@@ -2,7 +2,7 @@
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
-<title>Console de Mentoria — Oncologia Veterinária</title>
+<title>Agente Oncoway</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -283,9 +283,9 @@
 <div class="app">
 
   <div class="header">
-    <div class="eyebrow">Protótipo · Programa de Mentoria em Oncologia Veterinária</div>
-    <h1 class="title">Console de Consulta ao Acervo</h1>
-    <div class="subtitle">Perguntas dos alunos, interpretação de exames e consulta de doses — respondidas com base apenas no material carregado abaixo.</div>
+    <div class="eyebrow">Programa de Mentoria em Oncologia Veterinária</div>
+    <h1 class="title">Agente Oncoway</h1>
+    <div class="subtitle">Perguntas dos alunos, interpretação de exames e consulta de doses — respondidas com base apenas no material carregado pela mentora.</div>
   </div>
 
   <div class="body-grid">
@@ -293,26 +293,13 @@
     <div class="sidebar">
       <h2>Acervo consultado</h2>
       <div id="docList"></div>
-
-      <details class="add-doc" open>
-        <summary>+ Adicionar material</summary>
-        <div style="margin-bottom:10px;">
-          <label for="pdfInput" class="btn btn-ghost" style="display:inline-block; cursor:pointer;">📄 Enviar PDF ou TXT</label>
-          <input id="pdfInput" type="file" accept=".pdf,.txt" multiple style="display:none;" onchange="handleFileUpload(event)">
-          <div id="uploadStatus" style="font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--ink-soft); margin-top:6px;"></div>
-        </div>
-        <div style="font-size:11px; color:var(--ink-soft); margin-bottom:10px;">Aulas em vídeo/áudio: transcreva primeiro (ex: com o gravador do celular + um app de transcrição) e cole o texto abaixo, ou envie como .txt.</div>
-        <input id="docTitle" type="text" placeholder="Fonte (ex: Aula 4 — Linfoma, ou nome do artigo)">
-        <textarea id="docText" placeholder="Ou cole aqui o texto do artigo, capítulo ou transcrição da aula..."></textarea>
-        <button class="btn" onclick="addDocument()">Salvar no acervo</button>
-      </details>
     </div>
 
     <div class="chat-col">
       <div class="messages" id="messages">
         <div class="empty-state" id="emptyState">
           <h3>Comece uma consulta</h3>
-          <p>Este protótipo já vem com 3 materiais de exemplo carregados (protocolo de linfoma, interpretação de hemograma e estadiamento de mastocitoma). Adicione os materiais reais no painel ao lado quando quiser.</p>
+          <p>Pergunte digitando ou pelo microfone. As respostas usam apenas os materiais carregados pela mentora no acervo.</p>
           <div class="chips">
             <div class="chip" onclick="askQuick(this)">Como funciona o protocolo CHOP?</div>
             <div class="chip" onclick="askQuick(this)">Como interpretar leucopenia pós-quimioterapia?</div>
@@ -326,61 +313,21 @@
         <textarea id="input" placeholder="Digite a dúvida, cole valores de exame ou pergunte sobre uma dose..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage();}"></textarea>
         <button class="btn" id="sendBtn" onclick="sendMessage()">Enviar</button>
       </div>
-      <div class="footnote">⚠ Protótipo de demonstração — doses e interpretações devem sempre ser conferidas com a fonte original e validadas pela mentora antes de qualquer uso clínico.</div>
+      <div class="footnote">⚠ Agente Oncoway — doses e interpretações devem sempre ser conferidas com a fonte original e validadas pela mentora antes de qualquer uso clínico.</div>
     </div>
 
   </div>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script>
-if(window['pdfjsLib']){
-  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-}
-
-const SAMPLE_DOCS = [
-  {
-    id: 'seed-1',
-    name: 'Protocolo CHOP — Linfoma Canino (Aula 3, exemplo)',
-    text: `O protocolo CHOP é um dos esquemas quimioterápicos combinados mais utilizados no tratamento do linfoma multicêntrico canino, associando vincristina, ciclofosfamida, doxorrubicina e prednisona em ciclos semanais ao longo de aproximadamente 16 a 25 semanas, variando conforme o protocolo específico adotado pelo serviço.
-
-Como referência didática geral (NÃO usar como dose definitiva sem checar a fonte original e a mentora): vincristina costuma ser administrada na faixa de 0,5 a 0,7 mg/m² IV; ciclofosfamida na faixa de 200 a 250 mg/m² VO ou IV; doxorrubicina na faixa de 30 mg/m² IV para cães acima de 15kg (ajustada para 1 mg/kg em cães pequenos, devido ao risco de cardiotoxicidade). A prednisona geralmente é iniciada em dose imunossupressora e reduzida progressivamente ao longo das semanas.
-
-O monitoramento hematológico antes de cada aplicação é obrigatório, avaliando principalmente a contagem de neutrófilos, para decidir se a dose deve ser mantida, reduzida ou adiada.`
-  },
-  {
-    id: 'seed-2',
-    name: 'Interpretação de Hemograma em Paciente Oncológico (material de apoio, exemplo)',
-    text: `Em pacientes sob quimioterapia, o hemograma seriado é a principal ferramenta para monitorar toxicidade medular. A neutropenia é o achado mais comum e mais relevante clinicamente, geralmente com nadir entre 7 e 10 dias após a aplicação de agentes mielossupressores como a doxorrubicina.
-
-Como guia didático de gravidade: neutropenia leve corresponde a contagens entre 1.000 e 3.000 neutrófilos/µL, geralmente sem necessidade de intervenção além de observação; neutropenia moderada, entre 500 e 1.000/µL, requer atenção e possível adiamento da próxima dose; neutropenia grave, abaixo de 500/µL, associa-se a risco aumentado de sepse e geralmente indica necessidade de suporte com antibioticoterapia profilática e reavaliação do protocolo.
-
-A trombocitopenia e a anemia também devem ser monitoradas, mas costumam ser menos limitantes que a neutropenia na maioria dos protocolos citostáticos convencionais.`
-  },
-  {
-    id: 'seed-3',
-    name: 'Estadiamento de Mastocitoma Cutâneo Canino (artigo de apoio, exemplo)',
-    text: `O mastocitoma cutâneo canino é classificado histologicamente por sistemas de graduação (como Patnaik ou o sistema de dois graus de Kiupel), que orientam prognóstico, mas o estadiamento clínico é o que determina a extensão da doença.
-
-O estadiamento inclui exame físico completo com palpação de linfonodos regionais, citologia ou histopatologia do linfonodo suspeito, e exames de imagem (ultrassonografia abdominal e radiografia torácica) para avaliar possível envolvimento sistêmico. A citologia aspirativa do linfonodo é essencial mesmo quando ele não está aumentado de tamanho, pois a metástase microscópica pode estar presente sem alteração palpável.
-
-De forma geral, tumores de baixo grau, sem envolvimento linfonodal ou sistêmico, têm prognóstico significativamente mais favorável do que tumores de alto grau ou com doença disseminada, reforçando a importância do estadiamento completo antes de definir a conduta.`
-  }
-];
-
 let docs = [];
-let chatHistory = [];
-
-function chunk(text){
-  return text.split(/\n\s*\n/).map(p=>p.trim()).filter(p=>p.length>20);
-}
 
 async function loadDocs(){
   try{
     const res = await fetch('/api/docs');
     docs = await res.json();
   }catch(e){
-    docs = SAMPLE_DOCS;
+    docs = [];
   }
   renderDocs();
 }
@@ -388,99 +335,20 @@ async function loadDocs(){
 function renderDocs(){
   const el = document.getElementById('docList');
   el.innerHTML = '';
+  if(!docs.length){
+    el.innerHTML = '<div style="font-family:\'IBM Plex Mono\',monospace; font-size:11px; color:var(--ink-soft);">Nenhum material carregado ainda.</div>';
+    return;
+  }
   docs.forEach(d=>{
-    const wc = d.text.split(/\s+/).length;
     const card = document.createElement('div');
     card.className = 'doc-card';
-    card.innerHTML = `<div class="doc-name">${escapeHtml(d.name)}</div>
-      <div class="doc-meta">${wc} palavras</div>
-      <button onclick="removeDoc('${d.id}')">remover</button>`;
+    card.innerHTML = `<div class="doc-name">${escapeHtml(d.name)}</div>`;
     el.appendChild(card);
   });
 }
 
-async function removeDoc(id){
-  const res = await fetch('/api/docs/'+id, { method:'DELETE' });
-  docs = await res.json();
-  renderDocs();
-}
-
-async function addDocument(){
-  const title = document.getElementById('docTitle').value.trim();
-  const text = document.getElementById('docText').value.trim();
-  if(!title || !text){ alert('Preencha o nome da fonte e o texto.'); return; }
-  const res = await fetch('/api/docs', {
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ name:title, text:text })
-  });
-  docs = await res.json();
-  document.getElementById('docTitle').value = '';
-  document.getElementById('docText').value = '';
-  renderDocs();
-}
-
-function normalize(s){
-  return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
-}
-
-function retrieveContext(query){
-  const qWords = normalize(query).split(/\W+/).filter(w=>w.length>3);
-  let scored = [];
-  docs.forEach(d=>{
-    chunk(d.text).forEach(c=>{
-      const cNorm = normalize(c);
-      let score = 0;
-      qWords.forEach(w=>{ if(cNorm.includes(w)) score++; });
-      if(score>0) scored.push({ source:d.name, text:c, score });
-    });
-  });
-  scored.sort((a,b)=>b.score-a.score);
-  return scored.slice(0,5);
-}
-
 function escapeHtml(s){
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
-
-async function handleFileUpload(event){
-  const files = Array.from(event.target.files);
-  const status = document.getElementById('uploadStatus');
-  for(const file of files){
-    status.textContent = `Lendo ${file.name}...`;
-    try{
-      let text = '';
-      if(file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')){
-        if(!window['pdfjsLib']){ throw new Error('pdf.js não carregou'); }
-        const buf = await file.arrayBuffer();
-        const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-        let pages = [];
-        for(let i=1;i<=pdf.numPages;i++){
-          const page = await pdf.getPage(i);
-          const content = await page.getTextContent();
-          pages.push(content.items.map(it=>it.str).join(' '));
-        }
-        text = pages.join('\n\n');
-      } else {
-        text = await file.text();
-      }
-      if(text.trim().length < 20){
-        status.textContent = `${file.name}: não consegui extrair texto (pode ser um PDF escaneado/imagem).`;
-        continue;
-      }
-      const res = await fetch('/api/docs', {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ name:file.name, text:text })
-      });
-      docs = await res.json();
-      renderDocs();
-      status.textContent = `${file.name} adicionado ao acervo ✓`;
-    }catch(e){
-      status.textContent = `Erro ao ler ${file.name}: ${e.message}`;
-    }
-  }
-  event.target.value = '';
 }
 
 let recognition = null;
@@ -564,3 +432,7 @@ async function sendMessage(){
   document.getElementById('sendBtn').disabled = false;
 }
 
+loadDocs();
+</script>
+</body>
+</html>
