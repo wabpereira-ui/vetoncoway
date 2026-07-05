@@ -49,6 +49,18 @@ No painel do Meta, configure o webhook apontando para:
 `https://mentoria.vetjoicefaria.com/webhook`
 (mesmo verify token que você colocou nas variáveis de ambiente).
 
+### 5. Área da mentora — gerenciar o acervo
+
+Existe uma página separada, só para a mentora, em `/admin` (ex:
+`https://mentoria.vetjoicefaria.com/admin`). Ela pede usuário e senha — configure isso
+no Render em Environment Variables:
+- `ADMIN_USER` (ex: `mentora`)
+- `ADMIN_PASSWORD` (escolha uma senha forte)
+
+Nessa página dá para arrastar PDFs/.txt ou colar texto direto, e remover materiais antigos.
+Os alunos não enxergam essa página — a tela deles (`/`) só mostra a lista de fontes
+disponíveis, sem opção de editar.
+
 ## Testando localmente antes de hospedar (opcional)
 
 ```bash

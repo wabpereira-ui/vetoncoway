@@ -21,6 +21,24 @@ const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+const ADMIN_USER = process.env.ADMIN_USER || 'mentora';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
+
+// Protege as rotas de administração (gerenciar o acervo) com usuário/senha simples.
+// O navegador mostra uma caixinha de login nativa (Basic Auth).
+function requireAdmin(req, res, next) {
+  if (!ADMIN_PASSWORD) {
+    console.warn('ADMIN_PASSWORD não configurada — defina essa variável de ambiente para proteger o /admin.');
+  }
+  const auth = req.headers.authorization;
+  if (auth) {
+    const [, encoded] = auth.split(' ');
+    const [user, pass] = Buffer.from(encoded || '', 'base64').toString().split(':');
+    if (user === ADMIN_USER && pass === ADMIN_PASSWORD) return next();
+  }
+  res.set('WWW-Authenticate', 'Basic realm="Area da mentora"');
+  return res.status(401).send('Acesso restrito à mentora.');
+}
 
 const DOCS_PATH = path.join(__dirname, 'docs.json');
 
@@ -87,10 +105,20 @@ async function askClaude(question, contextBlock) {
 // ---------- API usada pelo app web ----------
 
 app.get('/api/docs', (req, res) => {
+  // Lista pública: só nome e id (sem o texto completo), usada na tela dos alunos.
+  const docs = loadDocs().map(d => ({ id: d.id, name: d.name }));
+  res.json(docs);
+});
+
+app.get('/admin', requireAdmin, (req, res) => {
+  res.sendFile(path.join(__dirname, 'admin', 'admin.html'));
+});
+
+app.get('/api/admin/docs', requireAdmin, (req, res) => {
   res.json(loadDocs());
 });
 
-app.post('/api/docs', (req, res) => {
+app.post('/api/admin/docs', requireAdmin, (req, res) => {
   const { name, text } = req.body;
   if (!name || !text) return res.status(400).json({ error: 'name e text são obrigatórios' });
   const docs = loadDocs();
@@ -99,7 +127,7 @@ app.post('/api/docs', (req, res) => {
   res.json(docs);
 });
 
-app.delete('/api/docs/:id', (req, res) => {
+app.delete('/api/admin/docs/:id', requireAdmin, (req, res) => {
   let docs = loadDocs();
   docs = docs.filter(d => d.id !== req.params.id);
   saveDocs(docs);
