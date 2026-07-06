@@ -230,16 +230,35 @@ function retrieveContext(query, docs, topN = 5) {
   return scored.slice(0, topN);
 }
 
-const SYSTEM_PROMPT = `Você é um assistente de apoio ao ensino de um programa de mentoria em oncologia veterinária.
+const SEM_COBERTURA = 'SEM_COBERTURA_NO_ACERVO';
+
+const SYSTEM_PROMPT_ACERVO = `Você é um assistente de apoio ao ensino de um programa de mentoria em oncologia veterinária.
 Responda SOMENTE com base no CONTEXTO fornecido pelo usuário, que vem do acervo de aulas, artigos e livros do programa.
 Regras obrigatórias:
-1) Se o contexto não contiver a resposta, diga claramente que o material disponível ainda não cobre esse ponto e sugira perguntar diretamente à mentora. Não invente informação.
-2) Seja objetivo e use linguagem técnica adequada para alunos de pós-graduação em oncologia veterinária.
+1) Se o contexto NÃO contiver informação suficiente para responder à pergunta, responda EXATAMENTE e SOMENTE com o texto: ${SEM_COBERTURA}
+   (sem mais nada, nem explicação, nem pontuação extra) — isso aciona uma busca complementar automática.
+2) Se o contexto for suficiente, responda normalmente, de forma objetiva e com linguagem técnica adequada para alunos de pós-graduação em oncologia veterinária.
 3) Sempre que a resposta envolver dose de medicamento, inclua no fim: "⚠ Confirme esta dose com a fonte original e com a mentora antes de qualquer uso clínico."
 4) Indique ao final, entre parênteses, a fonte usada, ex: (Fonte: Aula 3 — Linfoma).`;
 
-async function askClaude(question, contextBlock) {
-  const userContent = `CONTEXTO DISPONÍVEL:\n${contextBlock || '(nenhum trecho relevante encontrado no acervo)'}\n\nPERGUNTA DO ALUNO:\n${question}`;
+const SYSTEM_PROMPT_FALLBACK = `Você é um assistente de apoio a um programa de mentoria em oncologia veterinária.
+O acervo oficial do curso (aulas, artigos e livros selecionados pela mentora) NÃO cobre a pergunta do aluno.
+Responda usando seu conhecimento geral de medicina veterinária. Se precisar de informação atual, específica
+ou que exija verificação, use a ferramenta de busca na internet disponível.
+Regras obrigatórias:
+1) Comece a resposta deixando claro que esta informação NÃO vem dos materiais oficiais do curso — é conhecimento
+   geral e/ou pesquisa na internet, ainda não revisado pela mentora.
+2) Sempre que mencionar dose de medicamento, inclua: "⚠ Esta dose não foi validada pelos materiais do curso — confirme com a mentora antes de qualquer uso clínico."
+3) Seja objetivo e técnico. Se usou busca na internet, mencione brevemente a fonte.`;
+
+async function callClaude({ system, userContent, tools }) {
+  const body = {
+    model: 'claude-sonnet-4-6',
+    max_tokens: 800,
+    system,
+    messages: [{ role: 'user', content: userContent }]
+  };
+  if (tools) body.tools = tools;
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -247,20 +266,39 @@ async function askClaude(question, contextBlock) {
       'x-api-key': ANTHROPIC_API_KEY,
       'anthropic-version': '2023-06-01'
     },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 800,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: userContent }]
-    })
+    body: JSON.stringify(body)
   });
   const data = await response.json();
   if (data.error) {
     console.error('Erro da API Anthropic:', data.error);
-    return 'Desculpe, tive um problema para consultar o acervo agora. Tente novamente em instantes.';
+    return null;
   }
   const textBlocks = (data.content || []).filter(b => b.type === 'text').map(b => b.text);
-  return textBlocks.join('\n') || 'Não consegui gerar uma resposta agora.';
+  return textBlocks.join('\n').trim();
+}
+
+// Cascata: 1) tenta responder só com o acervo. 2) se não achar, tenta conhecimento geral
+// + busca na internet, sempre avisando que a resposta não é do material oficial do curso.
+async function askClaudeCascade(question, contextBlock) {
+  const userContent = `CONTEXTO DISPONÍVEL:\n${contextBlock || '(nenhum trecho relevante encontrado no acervo)'}\n\nPERGUNTA DO ALUNO:\n${question}`;
+  const acervoAnswer = await callClaude({ system: SYSTEM_PROMPT_ACERVO, userContent });
+
+  if (acervoAnswer === null) {
+    return { answer: 'Desculpe, tive um problema para consultar o acervo agora. Tente novamente em instantes.', tier: 'erro' };
+  }
+  if (acervoAnswer !== SEM_COBERTURA) {
+    return { answer: acervoAnswer, tier: 'acervo' };
+  }
+
+  const fallbackAnswer = await callClaude({
+    system: SYSTEM_PROMPT_FALLBACK,
+    userContent: `PERGUNTA DO ALUNO:\n${question}`,
+    tools: [{ type: 'web_search_20250305', name: 'web_search' }]
+  });
+  if (fallbackAnswer === null) {
+    return { answer: 'O acervo ainda não cobre esse assunto, e tive um problema ao buscar informação complementar. Sugiro perguntar diretamente à mentora.', tier: 'erro' };
+  }
+  return { answer: fallbackAnswer, tier: 'fallback' };
 }
 
 // ---------- API usada pela tela dos alunos (exige login) ----------
@@ -278,8 +316,8 @@ app.post('/api/ask', requireStudentApi, async (req, res) => {
     const topChunks = retrieveContext(question, docs);
     const contextBlock = topChunks.map(c => `[Fonte: ${c.source}]\n${c.text}`).join('\n\n---\n\n');
     const sources = [...new Set(topChunks.map(c => c.source))];
-    const answer = await askClaude(question, contextBlock);
-    res.json({ answer, sources });
+    const { answer, tier } = await askClaudeCascade(question, contextBlock);
+    res.json({ answer, sources: tier === 'acervo' ? sources : [], tier });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Erro interno' });
@@ -373,7 +411,7 @@ app.post('/webhook', async (req, res) => {
     const docs = loadDocs();
     const topChunks = retrieveContext(message.text.body, docs);
     const contextBlock = topChunks.map(c => `[Fonte: ${c.source}]\n${c.text}`).join('\n\n---\n\n');
-    const answer = await askClaude(message.text.body, contextBlock);
+    const { answer } = await askClaudeCascade(message.text.body, contextBlock);
     await sendWhatsAppMessage(message.from, answer);
   } catch (err) {
     console.error('Erro ao processar mensagem do WhatsApp:', err);
