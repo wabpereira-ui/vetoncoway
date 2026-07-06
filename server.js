@@ -1,20 +1,21 @@
-// Console de Mentoria em Oncologia Veterinária — Servidor unificado
+// Agente Oncoway — Servidor unificado
 // -------------------------------------------------------------------
-// Este único servidor cuida de três coisas:
-// 1) Serve o app web (pasta /public) — o que os alunos acessam no navegador
-// 2) Expõe uma API (/api/docs, /api/ask) usada pelo app web
-// 3) Recebe e responde mensagens do WhatsApp (/webhook)
+// Este único servidor cuida de:
+// 1) Login individual dos alunos (cada um com seu usuário e senha)
+// 2) O app web dos alunos (pasta /public)
+// 3) A área da mentora (/admin) — gerenciar acervo e contas de alunos
+// 4) O bot de WhatsApp (/webhook)
 //
 // Veja o README.md para o passo a passo de configuração e deploy.
 
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 require('dotenv').config();
 
 const app = express();
 app.use(express.json({ limit: '5mb' }));
-app.use(express.static(path.join(__dirname, 'public')));
 
 const PORT = process.env.PORT || 3000;
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN;
@@ -24,8 +25,92 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const ADMIN_USER = process.env.ADMIN_USER || 'mentora';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 
-// Protege as rotas de administração (gerenciar o acervo) com usuário/senha simples.
-// O navegador mostra uma caixinha de login nativa (Basic Auth).
+const DOCS_PATH = path.join(__dirname, 'docs.json');
+const STUDENTS_PATH = path.join(__dirname, 'students.json');
+
+function loadDocs() { return JSON.parse(fs.readFileSync(DOCS_PATH, 'utf8')); }
+function saveDocs(docs) { fs.writeFileSync(DOCS_PATH, JSON.stringify(docs, null, 2)); }
+
+function loadStudents() {
+  if (!fs.existsSync(STUDENTS_PATH)) return [];
+  return JSON.parse(fs.readFileSync(STUDENTS_PATH, 'utf8'));
+}
+function saveStudents(students) {
+  fs.writeFileSync(STUDENTS_PATH, JSON.stringify(students, null, 2));
+}
+
+// ---------- Senhas dos alunos (hash com salt, nunca em texto puro) ----------
+function hashPassword(password, salt) {
+  return crypto.scryptSync(password, salt, 64).toString('hex');
+}
+function createStudent(name, username, password) {
+  const students = loadStudents();
+  const usernameNorm = username.trim().toLowerCase();
+  if (students.some(s => s.username === usernameNorm)) {
+    throw new Error('Já existe um aluno com esse nome de usuário.');
+  }
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = hashPassword(password, salt);
+  const student = { id: 'aluno-' + Date.now(), name, username: usernameNorm, salt, hash };
+  students.push(student);
+  saveStudents(students);
+  return student;
+}
+function verifyStudent(username, password) {
+  const students = loadStudents();
+  const usernameNorm = (username || '').trim().toLowerCase();
+  const student = students.find(s => s.username === usernameNorm);
+  if (!student) return null;
+  const hash = hashPassword(password || '', student.salt);
+  const a = Buffer.from(hash, 'hex');
+  const b = Buffer.from(student.hash, 'hex');
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  return student;
+}
+
+// ---------- Sessões simples (cookie httpOnly + memória do servidor) ----------
+// Observação: sessões ficam na memória do processo. Se o servidor reiniciar,
+// todo mundo precisa logar de novo — isso é aceitável para um programa pequeno.
+const sessions = new Map(); // sessionId -> { studentId, name, expires }
+const SESSION_COOKIE = 'oncoway_session';
+const SESSION_DURATION_MS = 1000 * 60 * 60 * 24 * 30; // 30 dias
+
+function parseCookies(req) {
+  const header = req.headers.cookie;
+  const out = {};
+  if (!header) return out;
+  header.split(';').forEach(part => {
+    const idx = part.indexOf('=');
+    if (idx === -1) return;
+    const key = part.slice(0, idx).trim();
+    const val = part.slice(idx + 1).trim();
+    if (key) out[key] = decodeURIComponent(val);
+  });
+  return out;
+}
+function createSession(student, res, req) {
+  const sessionId = crypto.randomBytes(24).toString('hex');
+  sessions.set(sessionId, { studentId: student.id, name: student.name, expires: Date.now() + SESSION_DURATION_MS });
+  const secure = req.secure || req.headers['x-forwarded-proto'] === 'https';
+  res.setHeader('Set-Cookie', `${SESSION_COOKIE}=${sessionId}; HttpOnly; Path=/; Max-Age=${SESSION_DURATION_MS / 1000}; SameSite=Lax${secure ? '; Secure' : ''}`);
+}
+function destroySession(req, res) {
+  const cookies = parseCookies(req);
+  const sid = cookies[SESSION_COOKIE];
+  if (sid) sessions.delete(sid);
+  res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; HttpOnly; Path=/; Max-Age=0`);
+}
+function getSession(req) {
+  const cookies = parseCookies(req);
+  const sid = cookies[SESSION_COOKIE];
+  if (!sid) return null;
+  const session = sessions.get(sid);
+  if (!session) return null;
+  if (session.expires < Date.now()) { sessions.delete(sid); return null; }
+  return session;
+}
+
+// ---------- Auth da mentora (Basic Auth simples, separado do login dos alunos) ----------
 function requireAdmin(req, res, next) {
   if (!ADMIN_PASSWORD) {
     console.warn('ADMIN_PASSWORD não configurada — defina essa variável de ambiente para proteger o /admin.');
@@ -40,14 +125,45 @@ function requireAdmin(req, res, next) {
   return res.status(401).send('Acesso restrito à mentora.');
 }
 
-const DOCS_PATH = path.join(__dirname, 'docs.json');
+// ---------- Auth dos alunos (login individual por cookie de sessão) ----------
+function requireStudentPage(req, res, next) {
+  const session = getSession(req);
+  if (session) { req.student = session; return next(); }
+  return res.redirect('/login.html');
+}
+function requireStudentApi(req, res, next) {
+  const session = getSession(req);
+  if (session) { req.student = session; return next(); }
+  return res.status(401).json({ error: 'not_authenticated' });
+}
 
-function loadDocs() {
-  return JSON.parse(fs.readFileSync(DOCS_PATH, 'utf8'));
-}
-function saveDocs(docs) {
-  fs.writeFileSync(DOCS_PATH, JSON.stringify(docs, null, 2));
-}
+// Rotas públicas de login (sem senha nenhuma para acessar a própria tela de login)
+app.get('/login.html', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'login.html'));
+});
+app.post('/api/login', (req, res) => {
+  const { username, password } = req.body;
+  const student = verifyStudent(username, password);
+  if (!student) return res.status(401).json({ error: 'Usuário ou senha inválidos.' });
+  createSession(student, res, req);
+  res.json({ ok: true, name: student.name });
+});
+app.post('/api/logout', (req, res) => {
+  destroySession(req, res);
+  res.json({ ok: true });
+});
+app.get('/api/me', (req, res) => {
+  const session = getSession(req);
+  if (!session) return res.status(401).json({ error: 'not_authenticated' });
+  res.json({ name: session.name });
+});
+
+// Página principal e demais arquivos estáticos exigem login de aluno
+app.get('/', requireStudentPage, (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+app.use(express.static(path.join(__dirname, 'public'), { index: false }));
+
 function chunkText(text) {
   return text.split(/\n\s*\n/).map(p => p.trim()).filter(p => p.length > 20);
 }
@@ -96,45 +212,20 @@ async function askClaude(question, contextBlock) {
   const data = await response.json();
   if (data.error) {
     console.error('Erro da API Anthropic:', data.error);
-    return { answer: 'Desculpe, tive um problema para consultar o acervo agora. Tente novamente em instantes.', sources: [] };
+    return 'Desculpe, tive um problema para consultar o acervo agora. Tente novamente em instantes.';
   }
   const textBlocks = (data.content || []).filter(b => b.type === 'text').map(b => b.text);
   return textBlocks.join('\n') || 'Não consegui gerar uma resposta agora.';
 }
 
-// ---------- API usada pelo app web ----------
+// ---------- API usada pela tela dos alunos (exige login individual) ----------
 
-app.get('/api/docs', (req, res) => {
-  // Lista pública: só nome e id (sem o texto completo), usada na tela dos alunos.
+app.get('/api/docs', requireStudentApi, (req, res) => {
   const docs = loadDocs().map(d => ({ id: d.id, name: d.name }));
   res.json(docs);
 });
 
-app.get('/admin', requireAdmin, (req, res) => {
-  res.sendFile(path.join(__dirname, 'admin', 'admin.html'));
-});
-
-app.get('/api/admin/docs', requireAdmin, (req, res) => {
-  res.json(loadDocs());
-});
-
-app.post('/api/admin/docs', requireAdmin, (req, res) => {
-  const { name, text } = req.body;
-  if (!name || !text) return res.status(400).json({ error: 'name e text são obrigatórios' });
-  const docs = loadDocs();
-  docs.push({ id: 'doc-' + Date.now(), name, text });
-  saveDocs(docs);
-  res.json(docs);
-});
-
-app.delete('/api/admin/docs/:id', requireAdmin, (req, res) => {
-  let docs = loadDocs();
-  docs = docs.filter(d => d.id !== req.params.id);
-  saveDocs(docs);
-  res.json(docs);
-});
-
-app.post('/api/ask', async (req, res) => {
+app.post('/api/ask', requireStudentApi, async (req, res) => {
   try {
     const { question } = req.body;
     if (!question) return res.status(400).json({ error: 'question é obrigatório' });
@@ -148,6 +239,59 @@ app.post('/api/ask', async (req, res) => {
     console.error(err);
     res.status(500).json({ error: 'Erro interno' });
   }
+});
+
+// ---------- Área da mentora: acervo ----------
+
+app.get('/admin', requireAdmin, (req, res) => {
+  res.sendFile(path.join(__dirname, 'admin', 'admin.html'));
+});
+
+app.get('/api/admin/docs', requireAdmin, (req, res) => {
+  res.json(loadDocs());
+});
+app.post('/api/admin/docs', requireAdmin, (req, res) => {
+  const { name, text } = req.body;
+  if (!name || !text) return res.status(400).json({ error: 'name e text são obrigatórios' });
+  const docs = loadDocs();
+  docs.push({ id: 'doc-' + Date.now(), name, text });
+  saveDocs(docs);
+  res.json(docs);
+});
+app.delete('/api/admin/docs/:id', requireAdmin, (req, res) => {
+  let docs = loadDocs();
+  docs = docs.filter(d => d.id !== req.params.id);
+  saveDocs(docs);
+  res.json(docs);
+});
+
+// ---------- Área da mentora: contas dos alunos ----------
+
+app.get('/api/admin/students', requireAdmin, (req, res) => {
+  const students = loadStudents().map(s => ({ id: s.id, name: s.name, username: s.username }));
+  res.json(students);
+});
+app.post('/api/admin/students', requireAdmin, (req, res) => {
+  const { name, username, password } = req.body;
+  if (!name || !username || !password) {
+    return res.status(400).json({ error: 'name, username e password são obrigatórios' });
+  }
+  if (password.length < 6) {
+    return res.status(400).json({ error: 'A senha precisa ter pelo menos 6 caracteres.' });
+  }
+  try {
+    createStudent(name, username, password);
+    const students = loadStudents().map(s => ({ id: s.id, name: s.name, username: s.username }));
+    res.json(students);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+app.delete('/api/admin/students/:id', requireAdmin, (req, res) => {
+  let students = loadStudents();
+  students = students.filter(s => s.id !== req.params.id);
+  saveStudents(students);
+  res.json(students.map(s => ({ id: s.id, name: s.name, username: s.username })));
 });
 
 // ---------- WhatsApp ----------

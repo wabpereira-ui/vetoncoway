@@ -61,6 +61,32 @@ Nessa página dá para arrastar PDFs/.txt ou colar texto direto, e remover mater
 Os alunos não enxergam essa página — a tela deles (`/`) só mostra a lista de fontes
 disponíveis, sem opção de editar.
 
+### 6. Login individual por aluno
+
+Cada aluno tem seu próprio usuário e senha (em vez de uma senha única compartilhada).
+A mentora cria e remove esses acessos pela própria página `/admin`, na seção
+"Contas de alunos" — não precisa mexer em código nem em variáveis de ambiente para isso.
+
+Como funciona na prática:
+1. A mentora acessa `/admin`, cadastra o **nome**, um **usuário** (ex: `joao.silva`) e uma
+   **senha** para cada aluno.
+2. Ela repassa esse usuário/senha para o aluno correspondente (por WhatsApp, e-mail, etc.).
+3. O aluno acessa `https://mentoria.vetjoicefaria.com`, é levado para uma tela de login,
+   e entra com os dados que recebeu.
+4. Se um aluno sair do programa, a mentora simplesmente remove a conta dele em `/admin`
+   — sem afetar o acesso dos demais.
+
+**Observações técnicas:**
+- As senhas dos alunos ficam salvas com hash (criptografadas), nunca em texto puro.
+- As sessões de login ficam na memória do servidor. Isso significa que, se o Render
+  reiniciar o servidor (o que pode acontecer de vez em quando em planos gratuitos, por
+  inatividade), os alunos precisam logar de novo — não é perda de dados, só precisa
+  entrar outra vez.
+- O **WhatsApp continua sem esse controle de login individual** (não é tecnicamente
+  possível pedir usuário/senha por WhatsApp da mesma forma) — qualquer pessoa que tiver
+  o número pode mandar mensagem. Se isso for uma preocupação, uma opção futura é restringir
+  o bot para responder só a uma lista de números de telefone previamente cadastrados.
+
 ## Testando localmente antes de hospedar (opcional)
 
 ```bash
