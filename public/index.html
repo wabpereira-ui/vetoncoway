@@ -5,278 +5,69 @@
 <title>Agente Oncoway</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/11.1.1/marked.min.js"></script>
 <style>
   :root{
-    --paper:#F1F3EE;
-    --card:#FFFFFF;
-    --ink:#1E2A32;
-    --ink-soft:#4B5A61;
-    --navy:#223449;
-    --sage:#5C8374;
-    --sage-dark:#3F5C50;
-    --amber:#B8814A;
-    --alert:#B33F2E;
-    --line:#CBD3C4;
+    --paper:#F1F3EE; --card:#FFFFFF; --ink:#1E2A32; --ink-soft:#4B5A61;
+    --navy:#223449; --sage:#5C8374; --sage-dark:#3F5C50; --amber:#B8814A;
+    --alert:#B33F2E; --line:#CBD3C4;
   }
   *{box-sizing:border-box;}
-  body{
-    margin:0;
-    background:var(--paper);
-    color:var(--ink);
-    font-family:'IBM Plex Sans',sans-serif;
-    -webkit-font-smoothing:antialiased;
-  }
+  body{ margin:0; background:var(--paper); color:var(--ink); font-family:'IBM Plex Sans',sans-serif; -webkit-font-smoothing:antialiased; }
   .app{ display:flex; flex-direction:column; min-height:100vh; }
 
-  /* HEADER */
-  .header{
-    padding:22px 28px 18px;
-    border-bottom:2px solid var(--navy);
-    background:var(--card);
-  }
-  .eyebrow{
-    font-family:'IBM Plex Mono',monospace;
-    font-size:11px;
-    letter-spacing:2.5px;
-    color:var(--sage-dark);
-    text-transform:uppercase;
-    margin-bottom:6px;
-  }
-  .title{
-    font-family:'Source Serif 4',serif;
-    font-weight:700;
-    font-size:26px;
-    color:var(--navy);
-    margin:0;
-    letter-spacing:-0.2px;
-  }
-  .subtitle{
-    font-size:13.5px;
-    color:var(--ink-soft);
-    margin-top:4px;
-  }
+  .header{ padding:22px 28px 18px; border-bottom:2px solid var(--navy); background:var(--card); }
+  .eyebrow{ font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:2.5px; color:var(--sage-dark); text-transform:uppercase; margin-bottom:6px; }
+  .title{ font-family:'Source Serif 4',serif; font-weight:700; font-size:26px; color:var(--navy); margin:0; letter-spacing:-0.2px; }
+  .subtitle{ font-size:13.5px; color:var(--ink-soft); margin-top:4px; }
 
-  /* LAYOUT */
-  .body-grid{
-    flex:1;
-    display:grid;
-    grid-template-columns:300px 1fr;
-    gap:0;
-    min-height:0;
-  }
-  @media (max-width:820px){
-    .body-grid{ grid-template-columns:1fr; }
-  }
-
-  /* SIDEBAR - ACERVO */
-  .sidebar{
-    border-right:1px solid var(--line);
-    background:#EAEDE5;
-    padding:20px;
-    overflow-y:auto;
-  }
-  .sidebar h2{
-    font-family:'IBM Plex Mono',monospace;
-    font-size:11px;
-    letter-spacing:2px;
-    text-transform:uppercase;
-    color:var(--navy);
-    margin:0 0 12px;
-  }
-  .doc-card{
-    background:var(--card);
-    border:1px solid var(--line);
-    border-left:3px solid var(--sage);
-    border-radius:2px;
-    padding:10px 12px;
-    margin-bottom:8px;
-    position:relative;
-  }
-  .doc-card .doc-name{
-    font-size:13px;
-    font-weight:600;
-    color:var(--navy);
-    margin-bottom:2px;
-  }
-  .doc-card .doc-meta{
-    font-family:'IBM Plex Mono',monospace;
-    font-size:10.5px;
-    color:var(--ink-soft);
-  }
-  .doc-card button{
-    position:absolute;
-    top:8px; right:8px;
-    background:none;
-    border:none;
-    color:var(--alert);
-    font-size:11px;
-    cursor:pointer;
-    font-family:'IBM Plex Mono',monospace;
-    opacity:0.6;
-  }
-  .doc-card button:hover{ opacity:1; }
-
-  .add-doc{
-    margin-top:16px;
-    border-top:1px dashed var(--line);
-    padding-top:16px;
-  }
-  .add-doc summary{
-    cursor:pointer;
-    font-size:12.5px;
-    font-weight:600;
-    color:var(--sage-dark);
-    font-family:'IBM Plex Mono',monospace;
-    letter-spacing:0.5px;
-    text-transform:uppercase;
-    margin-bottom:10px;
-  }
-  .add-doc input, .add-doc textarea{
-    width:100%;
-    font-family:'IBM Plex Sans',sans-serif;
-    font-size:13px;
-    padding:8px 10px;
-    border:1px solid var(--line);
-    border-radius:3px;
-    margin-bottom:8px;
-    resize:vertical;
-    background:var(--card);
-    color:var(--ink);
-  }
-  .add-doc textarea{ min-height:90px; }
-  .btn{
-    font-family:'IBM Plex Mono',monospace;
-    font-size:12px;
-    letter-spacing:0.5px;
-    text-transform:uppercase;
-    background:var(--sage-dark);
-    color:#fff;
-    border:none;
-    border-radius:3px;
-    padding:9px 14px;
-    cursor:pointer;
-  }
-  .btn:hover{ background:var(--navy); }
-  .btn:disabled{ opacity:0.5; cursor:not-allowed; }
-  .btn-ghost{
-    background:none;
-    color:var(--sage-dark);
-    border:1px solid var(--sage-dark);
-  }
-  .btn-ghost:hover{ background:var(--sage-dark); color:#fff; }
-
-  /* CHAT */
-  .chat-col{ display:flex; flex-direction:column; min-height:0; }
-  .messages{
-    flex:1;
-    overflow-y:auto;
-    padding:24px 32px;
-    display:flex;
-    flex-direction:column;
-    gap:18px;
-  }
-  .empty-state{
-    margin:auto;
-    text-align:center;
-    max-width:460px;
-  }
-  .empty-state h3{
-    font-family:'Source Serif 4',serif;
-    font-size:19px;
-    color:var(--navy);
-    margin-bottom:6px;
-  }
+  .chat-col{ flex:1; display:flex; flex-direction:column; min-height:0; max-width:820px; width:100%; margin:0 auto; }
+  .messages{ flex:1; overflow-y:auto; padding:24px 28px; display:flex; flex-direction:column; gap:18px; }
+  .empty-state{ margin:auto; text-align:center; max-width:460px; }
+  .empty-state h3{ font-family:'Source Serif 4',serif; font-size:19px; color:var(--navy); margin-bottom:6px; }
   .empty-state p{ color:var(--ink-soft); font-size:13.5px; line-height:1.5; }
   .chips{ display:flex; flex-wrap:wrap; gap:8px; justify-content:center; margin-top:16px; }
-  .chip{
-    font-family:'IBM Plex Mono',monospace;
-    font-size:11.5px;
-    background:var(--card);
-    border:1px solid var(--line);
-    padding:7px 12px;
-    border-radius:20px;
-    cursor:pointer;
-    color:var(--sage-dark);
-  }
+  .chip{ font-family:'IBM Plex Mono',monospace; font-size:11.5px; background:var(--card); border:1px solid var(--line); padding:7px 12px; border-radius:20px; cursor:pointer; color:var(--sage-dark); }
   .chip:hover{ border-color:var(--sage-dark); }
 
-  .msg{ max-width:78%; }
+  .msg{ max-width:82%; }
   .msg.user{ align-self:flex-end; }
   .msg.assistant{ align-self:flex-start; }
-  .bubble{
-    padding:13px 16px;
-    border-radius:4px;
-    font-size:14.5px;
-    line-height:1.55;
-    white-space:pre-wrap;
-  }
-  .msg.user .bubble{
-    background:var(--navy);
-    color:#fff;
-    border-radius:4px 4px 2px 4px;
-  }
-  .msg.assistant .bubble{
-    background:var(--card);
-    border:1px solid var(--line);
-    border-radius:4px 4px 4px 2px;
-    color:var(--ink);
-  }
-  .stamp{
-    display:inline-block;
-    margin-top:8px;
-    font-family:'IBM Plex Mono',monospace;
-    font-size:10.5px;
-    letter-spacing:1.2px;
-    text-transform:uppercase;
-    border:1.5px dashed var(--sage-dark);
-    color:var(--sage-dark);
-    padding:4px 9px;
-    transform:rotate(-1.5deg);
-    border-radius:3px;
-  }
-  .dose-warning{
-    margin-top:10px;
-    background:#FBF0E4;
-    border:1px solid var(--amber);
-    color:#7A4E1F;
-    font-size:12.5px;
-    padding:9px 12px;
-    border-radius:3px;
-    font-family:'IBM Plex Mono',monospace;
-    line-height:1.5;
-  }
-  .thinking{
-    font-family:'IBM Plex Mono',monospace;
-    font-size:12.5px;
-    color:var(--ink-soft);
-    font-style:italic;
-  }
+  .bubble{ padding:13px 16px; border-radius:4px; font-size:14.5px; line-height:1.6; }
+  .msg.user .bubble{ background:var(--navy); color:#fff; border-radius:4px 4px 2px 4px; white-space:pre-wrap; }
+  .msg.assistant .bubble{ background:var(--card); border:1px solid var(--line); border-radius:4px 4px 4px 2px; color:var(--ink); }
+  .bubble h1, .bubble h2, .bubble h3{ font-family:'Source Serif 4',serif; color:var(--navy); margin:14px 0 6px; }
+  .bubble h1:first-child, .bubble h2:first-child, .bubble h3:first-child{ margin-top:0; }
+  .bubble ul, .bubble ol{ margin:6px 0; padding-left:22px; }
+  .bubble p{ margin:8px 0; }
+  .bubble p:first-child{ margin-top:0; }
+  .bubble blockquote{ border-left:3px solid var(--amber); margin:10px 0; padding:2px 12px; color:#7A4E1F; background:#FBF0E4; border-radius:0 3px 3px 0; }
+  .bubble code{ background:#EEF1EC; padding:1px 5px; border-radius:3px; font-family:'IBM Plex Mono',monospace; font-size:13px; }
 
-  .composer{
-    border-top:1px solid var(--line);
-    background:var(--card);
-    padding:16px 32px 20px;
-    display:flex;
-    gap:10px;
+  .stamp{ display:inline-block; margin-top:8px; font-family:'IBM Plex Mono',monospace; font-size:10.5px; letter-spacing:1.2px; text-transform:uppercase; border:1.5px dashed var(--sage-dark); color:var(--sage-dark); padding:4px 9px; transform:rotate(-1.5deg); border-radius:3px; }
+  .dose-warning{ margin-top:10px; background:#FBF0E4; border:1px solid var(--amber); color:#7A4E1F; font-size:12.5px; padding:9px 12px; border-radius:3px; font-family:'IBM Plex Mono',monospace; line-height:1.5; }
+  .thinking{ font-family:'IBM Plex Mono',monospace; font-size:12.5px; color:var(--ink-soft); font-style:italic; }
+
+  .attachment-preview{
+    display:flex; align-items:center; gap:8px; background:var(--card); border:1px solid var(--line);
+    border-radius:4px; padding:7px 10px; margin:0 28px 8px; max-width:820px; width:calc(100% - 56px);
+    font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--ink-soft);
   }
-  .composer textarea{
-    flex:1;
-    font-family:'IBM Plex Sans',sans-serif;
-    font-size:14.5px;
-    padding:11px 14px;
-    border:1px solid var(--line);
-    border-radius:5px;
-    resize:none;
-    min-height:46px;
-    max-height:140px;
-  }
+  .attachment-preview img{ height:32px; border-radius:2px; }
+  .attachment-preview button{ margin-left:auto; background:none; border:none; color:var(--alert); cursor:pointer; font-family:inherit; }
+
+  .composer{ border-top:1px solid var(--line); background:var(--card); padding:16px 28px 20px; display:flex; gap:8px; max-width:820px; width:100%; margin:0 auto; }
+  .composer textarea{ flex:1; font-family:'IBM Plex Sans',sans-serif; font-size:14.5px; padding:11px 14px; border:1px solid var(--line); border-radius:5px; resize:none; min-height:46px; max-height:140px; }
   .composer textarea:focus{ outline:2px solid var(--sage); outline-offset:-1px; }
-  .footnote{
-    font-size:11px;
-    color:var(--ink-soft);
-    padding:0 32px 14px;
-    font-family:'IBM Plex Mono',monospace;
+  .icon-btn{
+    font-family:'IBM Plex Mono',monospace; font-size:15px; background:none; color:var(--sage-dark);
+    border:1px solid var(--sage-dark); border-radius:5px; padding:0 12px; cursor:pointer; flex-shrink:0;
   }
+  .icon-btn:hover{ background:var(--sage-dark); color:#fff; }
+  .btn{ font-family:'IBM Plex Mono',monospace; font-size:12px; letter-spacing:0.5px; text-transform:uppercase; background:var(--sage-dark); color:#fff; border:none; border-radius:5px; padding:0 18px; cursor:pointer; flex-shrink:0; }
+  .btn:hover{ background:var(--navy); }
+  .footnote{ font-size:11px; color:var(--ink-soft); padding:0 28px 14px; font-family:'IBM Plex Mono',monospace; max-width:820px; margin:0 auto; width:100%; }
 </style>
 </head>
 <body>
@@ -285,45 +76,46 @@
   <div class="header">
     <div class="eyebrow">Programa de Mentoria em Oncologia Veterinária</div>
     <h1 class="title">Agente Oncoway</h1>
-    <div class="subtitle">Perguntas dos alunos, interpretação de exames e consulta de doses — respondidas com base apenas no material carregado pela mentora.</div>
+    <div class="subtitle">Perguntas, interpretação de exames (texto, foto ou PDF) e consulta de doses.</div>
     <div style="margin-top:10px; font-family:'IBM Plex Mono',monospace; font-size:11.5px; color:var(--ink-soft);">
       <span id="welcomeMsg"></span> · <a href="#" onclick="logout(); return false;" style="color:var(--sage-dark);">sair</a>
     </div>
   </div>
 
-  <div class="body-grid">
-
-    <div class="sidebar">
-      <h2>Acervo consultado</h2>
-      <div id="docList"></div>
-    </div>
-
-    <div class="chat-col">
-      <div class="messages" id="messages">
-        <div class="empty-state" id="emptyState">
-          <h3>Comece uma consulta</h3>
-          <p>Pergunte digitando ou pelo microfone. As respostas usam apenas os materiais carregados pela mentora no acervo.</p>
-          <div class="chips">
-            <div class="chip" onclick="askQuick(this)">Como funciona o protocolo CHOP?</div>
-            <div class="chip" onclick="askQuick(this)">Como interpretar leucopenia pós-quimioterapia?</div>
-            <div class="chip" onclick="askQuick(this)">Qual a dose de vincristina no CHOP?</div>
-            <div class="chip" onclick="askQuick(this)">Como estadiar um mastocitoma cutâneo?</div>
-          </div>
+  <div class="chat-col">
+    <div class="messages" id="messages">
+      <div class="empty-state" id="emptyState">
+        <h3>Comece uma consulta</h3>
+        <p>Pergunte digitando, pelo microfone, ou anexe uma foto/PDF de um exame para interpretação.</p>
+        <div class="chips">
+          <div class="chip" onclick="askQuick(this)">Como funciona o protocolo CHOP?</div>
+          <div class="chip" onclick="askQuick(this)">Como interpretar leucopenia pós-quimioterapia?</div>
+          <div class="chip" onclick="askQuick(this)">Qual a dose de vincristina no CHOP?</div>
+          <div class="chip" onclick="askQuick(this)">Como estadiar um mastocitoma cutâneo?</div>
         </div>
       </div>
-      <div class="composer">
-        <button class="btn btn-ghost" id="micBtn" onclick="toggleDictation()" title="Falar a pergunta" style="display:none;">🎤</button>
-        <textarea id="input" placeholder="Digite a dúvida, cole valores de exame ou pergunte sobre uma dose..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage();}"></textarea>
-        <button class="btn" id="sendBtn" onclick="sendMessage()">Enviar</button>
-      </div>
-      <div class="footnote">⚠ Agente Oncoway — doses e interpretações devem sempre ser conferidas com a fonte original e validadas pela mentora antes de qualquer uso clínico.</div>
     </div>
-
   </div>
+
+  <div id="attachmentPreview" style="display:none;"></div>
+
+  <div class="composer">
+    <button class="icon-btn" id="attachBtn" onclick="document.getElementById('fileInput').click()" title="Anexar foto ou PDF de um exame">📎</button>
+    <input id="fileInput" type="file" accept="image/*,.pdf" style="display:none;" onchange="handleAttachment(event)">
+    <button class="icon-btn" id="micBtn" onclick="toggleDictation()" title="Falar a pergunta" style="display:none;">🎤</button>
+    <textarea id="input" placeholder="Digite a dúvida, descreva o caso ou anexe um exame..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage();}"></textarea>
+    <button class="btn" id="sendBtn" onclick="sendMessage()">Enviar</button>
+  </div>
+  <div class="footnote">⚠ Agente Oncoway — doses e interpretações devem sempre ser conferidas com a fonte original e validadas pela mentora antes de qualquer uso clínico.</div>
 </div>
 
 <script>
-let docs = [];
+if(window['pdfjsLib']){
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+}
+marked.setOptions({ breaks: true });
+
+let pendingAttachment = null; // { kind:'image', mediaType, data, label } ou { kind:'examText', text, label }
 
 async function loadMe(){
   try{
@@ -334,40 +126,71 @@ async function loadMe(){
     }
   }catch(e){}
 }
+loadMe();
 
 async function logout(){
   await fetch('/api/logout', { method:'POST' });
   window.location.href = '/login.html';
 }
-loadMe();
-
-async function loadDocs(){
-  try{
-    const res = await fetch('/api/docs');
-    docs = await res.json();
-  }catch(e){
-    docs = [];
-  }
-  renderDocs();
-}
-
-function renderDocs(){
-  const el = document.getElementById('docList');
-  el.innerHTML = '';
-  if(!docs.length){
-    el.innerHTML = '<div style="font-family:\'IBM Plex Mono\',monospace; font-size:11px; color:var(--ink-soft);">Nenhum material carregado ainda.</div>';
-    return;
-  }
-  docs.forEach(d=>{
-    const card = document.createElement('div');
-    card.className = 'doc-card';
-    card.innerHTML = `<div class="doc-name">${escapeHtml(d.name)}</div>`;
-    el.appendChild(card);
-  });
-}
 
 function escapeHtml(s){
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function renderAttachmentPreview(){
+  const el = document.getElementById('attachmentPreview');
+  if(!pendingAttachment){ el.style.display = 'none'; el.innerHTML=''; return; }
+  el.style.display = 'flex';
+  el.className = 'attachment-preview';
+  const thumb = pendingAttachment.kind === 'image'
+    ? `<img src="data:${pendingAttachment.mediaType};base64,${pendingAttachment.data}">`
+    : '📄';
+  el.innerHTML = `${thumb}<span>${escapeHtml(pendingAttachment.label)}</span><button onclick="clearAttachment()">remover</button>`;
+}
+function clearAttachment(){
+  pendingAttachment = null;
+  document.getElementById('fileInput').value = '';
+  renderAttachmentPreview();
+}
+
+async function handleAttachment(event){
+  const file = event.target.files[0];
+  if(!file) return;
+  if(file.type.startsWith('image/')){
+    const dataUrl = await new Promise(resolve=>{
+      const reader = new FileReader();
+      reader.onload = ()=>resolve(reader.result);
+      reader.readAsDataURL(file);
+    });
+    const base64 = dataUrl.split(',')[1];
+    pendingAttachment = { kind:'image', mediaType:file.type, data:base64, label:file.name };
+    renderAttachmentPreview();
+  } else if(file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')){
+    try{
+      const buf = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+      let pages = [];
+      for(let i=1;i<=pdf.numPages;i++){
+        const page = await pdf.getPage(i);
+        const content = await page.getTextContent();
+        pages.push(content.items.map(it=>it.str).join(' '));
+      }
+      const text = pages.join('\n\n');
+      if(text.trim().length < 30){
+        alert('Não consegui ler texto desse PDF (pode ser um exame escaneado/foto). Tente enviar como imagem (JPG/PNG) em vez de PDF.');
+        event.target.value = '';
+        return;
+      }
+      pendingAttachment = { kind:'examText', text, label:file.name };
+      renderAttachmentPreview();
+    }catch(e){
+      alert('Erro ao ler o PDF: ' + e.message);
+      event.target.value = '';
+    }
+  } else {
+    alert('Formato não suportado. Envie uma imagem (JPG/PNG) ou um PDF.');
+    event.target.value = '';
+  }
 }
 
 let recognition = null;
@@ -420,18 +243,27 @@ function addMessageToDOM(role, html){
 async function sendMessage(){
   const input = document.getElementById('input');
   const question = input.value.trim();
-  if(!question) return;
+  if(!question && !pendingAttachment) return;
+
+  const attachment = pendingAttachment;
   input.value = '';
+  clearAttachment();
   document.getElementById('sendBtn').disabled = true;
 
-  addMessageToDOM('user', escapeHtml(question));
+  let userLabel = escapeHtml(question || '(sem texto)');
+  if(attachment) userLabel += `<br><span style="opacity:.8;">📎 ${escapeHtml(attachment.label)}</span>`;
+  addMessageToDOM('user', userLabel);
   const thinkingEl = addMessageToDOM('assistant', '<span class="thinking">consultando o acervo...</span>');
 
   try{
+    const body = { question: question || 'Interprete o exame anexado.' };
+    if(attachment?.kind === 'image'){ body.image = { mediaType: attachment.mediaType, data: attachment.data }; }
+    if(attachment?.kind === 'examText'){ body.examText = attachment.text; }
+
     const response = await fetch('/api/ask', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question })
+      body: JSON.stringify(body)
     });
     if(response.status === 401){ window.location.href = '/login.html'; return; }
     const data = await response.json();
@@ -443,20 +275,18 @@ async function sendMessage(){
     if(tier === 'acervo' && usedSources.length){
       extra += `<div class="stamp">Fonte consultada: ${escapeHtml(usedSources.join(' · '))}</div>`;
     }
-    if(tier === 'fallback'){
-      extra += `<div class="stamp" style="border-color:var(--amber); color:#7A4E1F;">⚠ Fora do acervo oficial — conhecimento geral / busca na internet, confirme com a mentora</div>`;
+    if(tier === 'fallback' || tier === 'exame'){
+      extra += `<div class="stamp" style="border-color:var(--amber); color:#7A4E1F;">⚠ Apoio interpretativo — não substitui revisão da mentora</div>`;
     }
     if(/dose|mg\/m|mg\/kg|posologia/i.test(answer)){
       extra += `<div class="dose-warning">⚠ Dose de referência didática. Confirme sempre com a fonte original e com a mentora antes de qualquer uso clínico.</div>`;
     }
-    thinkingEl.querySelector('.bubble').innerHTML = escapeHtml(answer).replace(/\n/g,'<br>') + extra;
+    thinkingEl.querySelector('.bubble').innerHTML = marked.parse(answer) + extra;
   }catch(e){
     thinkingEl.querySelector('.bubble').innerHTML = 'Erro ao consultar a IA. Verifique a conexão e tente novamente.';
   }
   document.getElementById('sendBtn').disabled = false;
 }
-
-loadDocs();
 </script>
 </body>
 </html>
