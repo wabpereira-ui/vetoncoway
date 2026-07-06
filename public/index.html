@@ -437,10 +437,14 @@ async function sendMessage(){
     const data = await response.json();
     const answer = data.answer || 'Não consegui gerar uma resposta agora. Tente novamente.';
     const usedSources = data.sources || [];
+    const tier = data.tier;
 
     let extra = '';
-    if(usedSources.length){
+    if(tier === 'acervo' && usedSources.length){
       extra += `<div class="stamp">Fonte consultada: ${escapeHtml(usedSources.join(' · '))}</div>`;
+    }
+    if(tier === 'fallback'){
+      extra += `<div class="stamp" style="border-color:var(--amber); color:#7A4E1F;">⚠ Fora do acervo oficial — conhecimento geral / busca na internet, confirme com a mentora</div>`;
     }
     if(/dose|mg\/m|mg\/kg|posologia/i.test(answer)){
       extra += `<div class="dose-warning">⚠ Dose de referência didática. Confirme sempre com a fonte original e com a mentora antes de qualquer uso clínico.</div>`;
