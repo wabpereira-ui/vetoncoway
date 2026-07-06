@@ -17,13 +17,19 @@
   }
   .card{
     background:var(--card); border:1px solid var(--line); border-top:3px solid var(--sage);
-    border-radius:4px; padding:32px; width:100%; max-width:360px;
+    border-radius:4px; padding:32px; width:100%; max-width:380px;
   }
   .eyebrow{
     font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:2.5px;
     color:var(--sage-dark); text-transform:uppercase; margin-bottom:6px; text-align:center;
   }
   h1{ font-family:'Source Serif 4',serif; font-size:22px; color:var(--navy); margin:0 0 22px; text-align:center; }
+  .tabs{ display:flex; border:1px solid var(--line); border-radius:4px; overflow:hidden; margin-bottom:20px; }
+  .tab{
+    flex:1; text-align:center; padding:9px; cursor:pointer; font-family:'IBM Plex Mono',monospace;
+    font-size:11.5px; letter-spacing:.5px; text-transform:uppercase; color:var(--ink-soft); background:var(--paper);
+  }
+  .tab.active{ background:var(--sage-dark); color:#fff; }
   label{ font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:.5px; text-transform:uppercase; color:var(--ink-soft); }
   input{
     width:100%; font-family:'IBM Plex Sans',sans-serif; font-size:14.5px; padding:10px 12px;
@@ -37,42 +43,81 @@
   }
   button:hover{ background:var(--navy); }
   .error{ color:var(--alert); font-size:12.5px; margin-top:12px; text-align:center; min-height:16px; }
+  .hint{ font-size:12px; color:var(--ink-soft); margin:-8px 0 16px; line-height:1.4; }
+  .form{ display:none; }
+  .form.active{ display:block; }
 </style>
 </head>
 <body>
   <div class="card">
     <div class="eyebrow">Programa de Mentoria em Oncologia Veterinária</div>
     <h1>Agente Oncoway</h1>
-    <form id="loginForm" onsubmit="return doLogin(event)">
-      <label for="username">Usuário</label>
-      <input id="username" type="text" autocomplete="username" required>
-      <label for="password">Senha</label>
-      <input id="password" type="password" autocomplete="current-password" required>
+
+    <div class="tabs">
+      <div class="tab active" id="tabLogin" onclick="showForm('login')">Entrar</div>
+      <div class="tab" id="tabRegister" onclick="showForm('register')">Primeiro acesso</div>
+    </div>
+
+    <form class="form active" id="loginForm" onsubmit="return doLogin(event)">
+      <label for="loginEmail">E-mail</label>
+      <input id="loginEmail" type="email" autocomplete="email" required>
+      <label for="loginPassword">Senha</label>
+      <input id="loginPassword" type="password" autocomplete="current-password" required>
       <button type="submit">Entrar</button>
-      <div class="error" id="error"></div>
+      <div class="error" id="loginError"></div>
+    </form>
+
+    <form class="form" id="registerForm" onsubmit="return doRegister(event)">
+      <div class="hint">Use o mesmo e-mail que a mentora cadastrou para você, e crie sua própria senha (mínimo 6 caracteres).</div>
+      <label for="regEmail">E-mail</label>
+      <input id="regEmail" type="email" autocomplete="email" required>
+      <label for="regPassword">Criar senha</label>
+      <input id="regPassword" type="password" autocomplete="new-password" required minlength="6">
+      <button type="submit">Criar minha senha e entrar</button>
+      <div class="error" id="registerError"></div>
     </form>
   </div>
 <script>
+function showForm(which){
+  document.getElementById('tabLogin').classList.toggle('active', which==='login');
+  document.getElementById('tabRegister').classList.toggle('active', which==='register');
+  document.getElementById('loginForm').classList.toggle('active', which==='login');
+  document.getElementById('registerForm').classList.toggle('active', which==='register');
+}
+
 async function doLogin(e){
   e.preventDefault();
-  const username = document.getElementById('username').value.trim();
-  const password = document.getElementById('password').value;
-  const errorEl = document.getElementById('error');
+  const email = document.getElementById('loginEmail').value.trim();
+  const password = document.getElementById('loginPassword').value;
+  const errorEl = document.getElementById('loginError');
   errorEl.textContent = '';
   try{
     const res = await fetch('/api/login', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ username, password })
+      body: JSON.stringify({ email, password })
     });
     const data = await res.json();
-    if(res.ok){
-      window.location.href = '/';
-    } else {
-      errorEl.textContent = data.error || 'Não foi possível entrar.';
-    }
-  }catch(err){
-    errorEl.textContent = 'Erro de conexão. Tente novamente.';
-  }
+    if(res.ok){ window.location.href = '/'; }
+    else{ errorEl.textContent = data.error || 'Não foi possível entrar.'; }
+  }catch(err){ errorEl.textContent = 'Erro de conexão. Tente novamente.'; }
+  return false;
+}
+
+async function doRegister(e){
+  e.preventDefault();
+  const email = document.getElementById('regEmail').value.trim();
+  const password = document.getElementById('regPassword').value;
+  const errorEl = document.getElementById('registerError');
+  errorEl.textContent = '';
+  try{
+    const res = await fetch('/api/register', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ email, password })
+    });
+    const data = await res.json();
+    if(res.ok){ window.location.href = '/'; }
+    else{ errorEl.textContent = data.error || 'Não foi possível criar a senha.'; }
+  }catch(err){ errorEl.textContent = 'Erro de conexão. Tente novamente.'; }
   return false;
 }
 </script>
