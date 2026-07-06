@@ -54,12 +54,12 @@
     <h2>Materiais no acervo</h2>
     <div id="docList"></div>
 
-    <h2>Contas de alunos</h2>
+    <h2>Alunos</h2>
     <div class="panel">
+      <div style="font-size:12px; color:var(--ink-soft); margin-bottom:12px;">Cadastre o nome e e-mail do aluno — ele mesmo cria a senha na tela de "Primeiro acesso".</div>
       <input id="studentName" type="text" placeholder="Nome do aluno (ex: João Silva)">
-      <input id="studentUsername" type="text" placeholder="Usuário (ex: joao.silva)">
-      <input id="studentPassword" type="text" placeholder="Senha (mínimo 6 caracteres)">
-      <button class="btn" onclick="addStudent()">Criar acesso</button>
+      <input id="studentEmail" type="email" placeholder="E-mail do aluno">
+      <button class="btn" onclick="addStudent()">Convidar aluno</button>
       <div id="studentStatus" class="status"></div>
     </div>
     <div id="studentList" style="margin-top:12px;"></div>
@@ -160,10 +160,13 @@ function renderStudents(students){
   el.innerHTML = '';
   if(!students.length){ el.innerHTML = '<div class="status">Nenhum aluno cadastrado ainda.</div>'; return; }
   students.forEach(s=>{
+    const statusLabel = s.passwordSet ? 'ativo' : 'aguardando primeiro acesso';
     const card = document.createElement('div');
     card.className = 'doc-card';
+    card.style.paddingRight = '110px';
     card.innerHTML = `<div class="doc-name">${escapeHtml(s.name)}</div>
-      <div class="doc-meta">usuário: ${escapeHtml(s.username)}</div>
+      <div class="doc-meta">${escapeHtml(s.email)} · ${statusLabel}</div>
+      <button style="right:70px;" onclick="resetStudent('${s.id}')" title="Resetar senha (aluno esqueceu)">resetar</button>
       <button onclick="removeStudent('${s.id}')">remover</button>`;
     el.appendChild(card);
   });
@@ -171,21 +174,25 @@ function renderStudents(students){
 
 async function addStudent(){
   const name = document.getElementById('studentName').value.trim();
-  const username = document.getElementById('studentUsername').value.trim();
-  const password = document.getElementById('studentPassword').value;
+  const email = document.getElementById('studentEmail').value.trim();
   const status = document.getElementById('studentStatus');
-  if(!name || !username || !password){ status.textContent = 'Preencha nome, usuário e senha.'; return; }
+  if(!name || !email){ status.textContent = 'Preencha nome e e-mail.'; return; }
   const res = await fetch('/api/admin/students', {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ name, username, password })
+    body: JSON.stringify({ name, email })
   });
   const data = await res.json();
-  if(!res.ok){ status.textContent = data.error || 'Erro ao criar acesso.'; return; }
+  if(!res.ok){ status.textContent = data.error || 'Erro ao convidar aluno.'; return; }
   renderStudents(data);
   document.getElementById('studentName').value = '';
-  document.getElementById('studentUsername').value = '';
-  document.getElementById('studentPassword').value = '';
-  status.textContent = `Acesso criado para ${name} ✓`;
+  document.getElementById('studentEmail').value = '';
+  status.textContent = `Convite criado para ${name} — avise para acessar e fazer "Primeiro acesso" com esse e-mail ✓`;
+}
+
+async function resetStudent(id){
+  if(!confirm('Isso vai apagar a senha atual desse aluno e ele vai precisar fazer "Primeiro acesso" de novo. Continuar?')) return;
+  const res = await fetch('/api/admin/students/'+id+'/reset', { method:'POST' });
+  renderStudents(await res.json());
 }
 
 async function removeStudent(id){
