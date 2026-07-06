@@ -1,9 +1,9 @@
 // Agente Oncoway — Servidor unificado
 // -------------------------------------------------------------------
 // Este único servidor cuida de:
-// 1) Login individual dos alunos (cada um com seu usuário e senha)
+// 1) Login dos alunos por e-mail, com "primeiro acesso" (o aluno cria a própria senha)
 // 2) O app web dos alunos (pasta /public)
-// 3) A área da mentora (/admin) — gerenciar acervo e contas de alunos
+// 3) A área da mentora (/admin) — gerenciar acervo e convites de alunos
 // 4) O bot de WhatsApp (/webhook)
 //
 // Veja o README.md para o passo a passo de configuração e deploy.
@@ -43,28 +43,58 @@ function saveStudents(students) {
 function hashPassword(password, salt) {
   return crypto.scryptSync(password, salt, 64).toString('hex');
 }
-function createStudent(name, username, password) {
+
+// Cria um "convite" — nome + e-mail, ainda sem senha. O aluno define a senha
+// dele mesmo na tela de "Primeiro acesso".
+function inviteStudent(name, email) {
   const students = loadStudents();
-  const usernameNorm = username.trim().toLowerCase();
-  if (students.some(s => s.username === usernameNorm)) {
-    throw new Error('Já existe um aluno com esse nome de usuário.');
+  const emailNorm = email.trim().toLowerCase();
+  if (students.some(s => s.email === emailNorm)) {
+    throw new Error('Já existe um convite ou conta com esse e-mail.');
   }
-  const salt = crypto.randomBytes(16).toString('hex');
-  const hash = hashPassword(password, salt);
-  const student = { id: 'aluno-' + Date.now(), name, username: usernameNorm, salt, hash };
+  const student = { id: 'aluno-' + Date.now(), name, email: emailNorm, passwordSet: false, salt: null, hash: null };
   students.push(student);
   saveStudents(students);
   return student;
 }
-function verifyStudent(username, password) {
+
+// Primeiro acesso: o aluno define a própria senha para um convite existente.
+function setStudentPassword(email, password) {
   const students = loadStudents();
-  const usernameNorm = (username || '').trim().toLowerCase();
-  const student = students.find(s => s.username === usernameNorm);
-  if (!student) return null;
+  const emailNorm = (email || '').trim().toLowerCase();
+  const student = students.find(s => s.email === emailNorm);
+  if (!student) throw new Error('E-mail não encontrado. Peça um convite para a mentora.');
+  if (student.passwordSet) throw new Error('Essa conta já tem senha. Use "Entrar", ou peça para a mentora resetar o acesso.');
+  const salt = crypto.randomBytes(16).toString('hex');
+  student.salt = salt;
+  student.hash = hashPassword(password, salt);
+  student.passwordSet = true;
+  saveStudents(students);
+  return student;
+}
+
+function verifyStudent(email, password) {
+  const students = loadStudents();
+  const emailNorm = (email || '').trim().toLowerCase();
+  const student = students.find(s => s.email === emailNorm);
+  if (!student || !student.passwordSet) return null;
   const hash = hashPassword(password || '', student.salt);
   const a = Buffer.from(hash, 'hex');
   const b = Buffer.from(student.hash, 'hex');
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  return student;
+}
+
+// Mentora "reseta" o acesso (ex: aluno esqueceu a senha): volta o status para
+// "convite pendente", sem apagar o cadastro. O aluno faz "Primeiro acesso" de novo.
+function resetStudentPassword(id) {
+  const students = loadStudents();
+  const student = students.find(s => s.id === id);
+  if (!student) throw new Error('Aluno não encontrado.');
+  student.passwordSet = false;
+  student.salt = null;
+  student.hash = null;
+  saveStudents(students);
   return student;
 }
 
@@ -137,17 +167,32 @@ function requireStudentApi(req, res, next) {
   return res.status(401).json({ error: 'not_authenticated' });
 }
 
-// Rotas públicas de login (sem senha nenhuma para acessar a própria tela de login)
+// Rotas públicas de login/cadastro (sem exigir sessão)
 app.get('/login.html', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'login.html'));
 });
+
 app.post('/api/login', (req, res) => {
-  const { username, password } = req.body;
-  const student = verifyStudent(username, password);
-  if (!student) return res.status(401).json({ error: 'Usuário ou senha inválidos.' });
+  const { email, password } = req.body;
+  const student = verifyStudent(email, password);
+  if (!student) return res.status(401).json({ error: 'E-mail ou senha inválidos.' });
   createSession(student, res, req);
   res.json({ ok: true, name: student.name });
 });
+
+app.post('/api/register', (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) return res.status(400).json({ error: 'E-mail e senha são obrigatórios.' });
+  if (password.length < 6) return res.status(400).json({ error: 'A senha precisa ter pelo menos 6 caracteres.' });
+  try {
+    const student = setStudentPassword(email, password);
+    createSession(student, res, req);
+    res.json({ ok: true, name: student.name });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 app.post('/api/logout', (req, res) => {
   destroySession(req, res);
   res.json({ ok: true });
@@ -218,7 +263,7 @@ async function askClaude(question, contextBlock) {
   return textBlocks.join('\n') || 'Não consegui gerar uma resposta agora.';
 }
 
-// ---------- API usada pela tela dos alunos (exige login individual) ----------
+// ---------- API usada pela tela dos alunos (exige login) ----------
 
 app.get('/api/docs', requireStudentApi, (req, res) => {
   const docs = loadDocs().map(d => ({ id: d.id, name: d.name }));
@@ -265,33 +310,41 @@ app.delete('/api/admin/docs/:id', requireAdmin, (req, res) => {
   res.json(docs);
 });
 
-// ---------- Área da mentora: contas dos alunos ----------
+// ---------- Área da mentora: convites e contas dos alunos ----------
 
 app.get('/api/admin/students', requireAdmin, (req, res) => {
-  const students = loadStudents().map(s => ({ id: s.id, name: s.name, username: s.username }));
+  const students = loadStudents().map(s => ({ id: s.id, name: s.name, email: s.email, passwordSet: s.passwordSet }));
   res.json(students);
 });
+
 app.post('/api/admin/students', requireAdmin, (req, res) => {
-  const { name, username, password } = req.body;
-  if (!name || !username || !password) {
-    return res.status(400).json({ error: 'name, username e password são obrigatórios' });
-  }
-  if (password.length < 6) {
-    return res.status(400).json({ error: 'A senha precisa ter pelo menos 6 caracteres.' });
-  }
+  const { name, email } = req.body;
+  if (!name || !email) return res.status(400).json({ error: 'name e email são obrigatórios' });
+  if (!email.includes('@')) return res.status(400).json({ error: 'E-mail inválido.' });
   try {
-    createStudent(name, username, password);
-    const students = loadStudents().map(s => ({ id: s.id, name: s.name, username: s.username }));
+    inviteStudent(name, email);
+    const students = loadStudents().map(s => ({ id: s.id, name: s.name, email: s.email, passwordSet: s.passwordSet }));
     res.json(students);
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
 });
+
+app.post('/api/admin/students/:id/reset', requireAdmin, (req, res) => {
+  try {
+    resetStudentPassword(req.params.id);
+    const students = loadStudents().map(s => ({ id: s.id, name: s.name, email: s.email, passwordSet: s.passwordSet }));
+    res.json(students);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 app.delete('/api/admin/students/:id', requireAdmin, (req, res) => {
   let students = loadStudents();
   students = students.filter(s => s.id !== req.params.id);
   saveStudents(students);
-  res.json(students.map(s => ({ id: s.id, name: s.name, username: s.username })));
+  res.json(students.map(s => ({ id: s.id, name: s.name, email: s.email, passwordSet: s.passwordSet })));
 });
 
 // ---------- WhatsApp ----------

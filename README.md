@@ -61,31 +61,27 @@ Nessa página dá para arrastar PDFs/.txt ou colar texto direto, e remover mater
 Os alunos não enxergam essa página — a tela deles (`/`) só mostra a lista de fontes
 disponíveis, sem opção de editar.
 
-### 6. Login individual por aluno
+### 6. Login por e-mail, com "Primeiro acesso" (e recuperação simples de senha)
 
-Cada aluno tem seu próprio usuário e senha (em vez de uma senha única compartilhada).
-A mentora cria e remove esses acessos pela própria página `/admin`, na seção
-"Contas de alunos" — não precisa mexer em código nem em variáveis de ambiente para isso.
+Em vez da mentora inventar uma senha para cada aluno, o fluxo agora é:
 
-Como funciona na prática:
-1. A mentora acessa `/admin`, cadastra o **nome**, um **usuário** (ex: `joao.silva`) e uma
-   **senha** para cada aluno.
-2. Ela repassa esse usuário/senha para o aluno correspondente (por WhatsApp, e-mail, etc.).
-3. O aluno acessa `https://mentoria.vetjoicefaria.com`, é levado para uma tela de login,
-   e entra com os dados que recebeu.
-4. Se um aluno sair do programa, a mentora simplesmente remove a conta dele em `/admin`
-   — sem afetar o acesso dos demais.
+1. A mentora acessa `/admin`, seção **"Alunos"**, e **convida** um aluno só com **nome e e-mail**
+   (sem senha nenhuma nessa etapa).
+2. Ela avisa o aluno (por WhatsApp, e-mail, etc.) que o acesso está liberado.
+3. O aluno acessa `https://mentoria.vetjoicefaria.com`, cai na tela de login, clica na aba
+   **"Primeiro acesso"**, digita o mesmo e-mail cadastrado e **cria a própria senha**.
+4. Daí em diante, ele usa "Entrar" normalmente com e-mail + a senha que ele mesmo escolheu.
 
-**Observações técnicas:**
-- As senhas dos alunos ficam salvas com hash (criptografadas), nunca em texto puro.
-- As sessões de login ficam na memória do servidor. Isso significa que, se o Render
-  reiniciar o servidor (o que pode acontecer de vez em quando em planos gratuitos, por
-  inatividade), os alunos precisam logar de novo — não é perda de dados, só precisa
-  entrar outra vez.
-- O **WhatsApp continua sem esse controle de login individual** (não é tecnicamente
-  possível pedir usuário/senha por WhatsApp da mesma forma) — qualquer pessoa que tiver
-  o número pode mandar mensagem. Se isso for uma preocupação, uma opção futura é restringir
-  o bot para responder só a uma lista de números de telefone previamente cadastrados.
+**Se o aluno esquecer a senha:** como não há envio de e-mail configurado (isso exigiria
+contratar um serviço de e-mail à parte), a recuperação é feita pela mentora:
+- Em `/admin`, na lista de alunos, clique em **"resetar"** ao lado do nome do aluno.
+- Isso apaga a senha antiga e volta o status dele para "aguardando primeiro acesso".
+- O aluno faz "Primeiro acesso" de novo, com o mesmo e-mail, e cria uma senha nova.
+
+Isso evita a complexidade (e o custo) de configurar um sistema de "esqueci minha senha" por
+e-mail automático, mantendo o controle nas mãos da mentora — adequado para o tamanho de
+um programa de mentoria. Se no futuro o número de alunos crescer muito e isso virar
+trabalho demais para ela, dá para evoluir para recuperação por e-mail automática.
 
 ## Testando localmente antes de hospedar (opcional)
 
