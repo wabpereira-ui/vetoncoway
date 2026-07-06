@@ -62,6 +62,17 @@
       <button class="btn" onclick="addStudent()">Convidar aluno</button>
       <div id="studentStatus" class="status"></div>
     </div>
+
+    <details style="margin-top:10px;">
+      <summary style="cursor:pointer; font-family:'IBM Plex Mono',monospace; font-size:12px; letter-spacing:.5px; text-transform:uppercase; color:var(--sage-dark);">+ Convidar vários alunos de uma vez</summary>
+      <div class="panel" style="margin-top:10px;">
+        <div style="font-size:12px; color:var(--ink-soft); margin-bottom:10px;">Um aluno por linha, no formato <code>Nome, e-mail</code>. Exemplo:<br><code>João Silva, joao@email.com</code><br><code>Maria Souza, maria@email.com</code></div>
+        <textarea id="bulkStudents" placeholder="João Silva, joao@email.com&#10;Maria Souza, maria@email.com" style="min-height:120px;"></textarea>
+        <button class="btn" onclick="addStudentsBulk()">Convidar todos</button>
+        <div id="bulkStatus" class="status" style="white-space:pre-line; margin-top:8px;"></div>
+      </div>
+    </details>
+
     <div id="studentList" style="margin-top:12px;"></div>
   </div>
 
@@ -149,6 +160,42 @@ async function handleFileUpload(event){
 }
 
 loadDocs();
+
+async function addStudentsBulk(){
+  const raw = document.getElementById('bulkStudents').value;
+  const lines = raw.split('\n').map(l=>l.trim()).filter(l=>l.length);
+  const statusEl = document.getElementById('bulkStatus');
+  if(!lines.length){ statusEl.textContent = 'Cole ao menos uma linha no formato Nome, e-mail.'; return; }
+
+  let ok = 0, falhas = [];
+  statusEl.textContent = `Processando ${lines.length} linha(s)...`;
+
+  for(const line of lines){
+    const parts = line.split(',');
+    if(parts.length < 2){ falhas.push(`"${line}" — formato inválido (use: Nome, e-mail)`); continue; }
+    const name = parts[0].trim();
+    const email = parts.slice(1).join(',').trim();
+    if(!name || !email || !email.includes('@')){ falhas.push(`"${line}" — nome ou e-mail inválido`); continue; }
+    try{
+      const res = await fetch('/api/admin/students', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ name, email })
+      });
+      const data = await res.json();
+      if(!res.ok){ falhas.push(`${email} — ${data.error || 'erro ao convidar'}`); continue; }
+      ok++;
+      renderStudents(data);
+    }catch(e){
+      falhas.push(`${email} — erro de conexão`);
+    }
+  }
+
+  let summary = `${ok} convite(s) criado(s) com sucesso.`;
+  if(falhas.length){ summary += `\n${falhas.length} com problema:\n` + falhas.join('\n'); }
+  statusEl.textContent = summary;
+  if(ok > 0) document.getElementById('bulkStudents').value = '';
+  loadStudents();
+}
 
 async function loadStudents(){
   const res = await fetch('/api/admin/students');
