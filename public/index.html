@@ -286,6 +286,9 @@
     <div class="eyebrow">Programa de Mentoria em Oncologia Veterinária</div>
     <h1 class="title">Agente Oncoway</h1>
     <div class="subtitle">Perguntas dos alunos, interpretação de exames e consulta de doses — respondidas com base apenas no material carregado pela mentora.</div>
+    <div style="margin-top:10px; font-family:'IBM Plex Mono',monospace; font-size:11.5px; color:var(--ink-soft);">
+      <span id="welcomeMsg"></span> · <a href="#" onclick="logout(); return false;" style="color:var(--sage-dark);">sair</a>
+    </div>
   </div>
 
   <div class="body-grid">
@@ -321,6 +324,22 @@
 
 <script>
 let docs = [];
+
+async function loadMe(){
+  try{
+    const res = await fetch('/api/me');
+    if(res.ok){
+      const data = await res.json();
+      document.getElementById('welcomeMsg').textContent = 'Olá, ' + data.name;
+    }
+  }catch(e){}
+}
+
+async function logout(){
+  await fetch('/api/logout', { method:'POST' });
+  window.location.href = '/login.html';
+}
+loadMe();
 
 async function loadDocs(){
   try{
@@ -414,6 +433,7 @@ async function sendMessage(){
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ question })
     });
+    if(response.status === 401){ window.location.href = '/login.html'; return; }
     const data = await response.json();
     const answer = data.answer || 'Não consegui gerar uma resposta agora. Tente novamente.';
     const usedSources = data.sources || [];

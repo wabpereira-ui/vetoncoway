@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Agente Oncoway — Entrar</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#F1F3EE; --card:#FFFFFF; --ink:#1E2A32; --ink-soft:#4B5A61;
+    --navy:#223449; --sage:#5C8374; --sage-dark:#3F5C50; --alert:#B33F2E; --line:#CBD3C4;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+    background:var(--paper); color:var(--ink); font-family:'IBM Plex Sans',sans-serif;
+  }
+  .card{
+    background:var(--card); border:1px solid var(--line); border-top:3px solid var(--sage);
+    border-radius:4px; padding:32px; width:100%; max-width:360px;
+  }
+  .eyebrow{
+    font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:2.5px;
+    color:var(--sage-dark); text-transform:uppercase; margin-bottom:6px; text-align:center;
+  }
+  h1{ font-family:'Source Serif 4',serif; font-size:22px; color:var(--navy); margin:0 0 22px; text-align:center; }
+  label{ font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:.5px; text-transform:uppercase; color:var(--ink-soft); }
+  input{
+    width:100%; font-family:'IBM Plex Sans',sans-serif; font-size:14.5px; padding:10px 12px;
+    border:1px solid var(--line); border-radius:3px; margin:6px 0 16px;
+  }
+  input:focus{ outline:2px solid var(--sage); outline-offset:-1px; }
+  button{
+    width:100%; font-family:'IBM Plex Mono',monospace; font-size:13px; letter-spacing:.5px;
+    text-transform:uppercase; background:var(--sage-dark); color:#fff; border:none;
+    border-radius:3px; padding:12px; cursor:pointer;
+  }
+  button:hover{ background:var(--navy); }
+  .error{ color:var(--alert); font-size:12.5px; margin-top:12px; text-align:center; min-height:16px; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="eyebrow">Programa de Mentoria em Oncologia Veterinária</div>
+    <h1>Agente Oncoway</h1>
+    <form id="loginForm" onsubmit="return doLogin(event)">
+      <label for="username">Usuário</label>
+      <input id="username" type="text" autocomplete="username" required>
+      <label for="password">Senha</label>
+      <input id="password" type="password" autocomplete="current-password" required>
+      <button type="submit">Entrar</button>
+      <div class="error" id="error"></div>
+    </form>
+  </div>
+<script>
+async function doLogin(e){
+  e.preventDefault();
+  const username = document.getElementById('username').value.trim();
+  const password = document.getElementById('password').value;
+  const errorEl = document.getElementById('error');
+  errorEl.textContent = '';
+  try{
+    const res = await fetch('/api/login', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ username, password })
+    });
+    const data = await res.json();
+    if(res.ok){
+      window.location.href = '/';
+    } else {
+      errorEl.textContent = data.error || 'Não foi possível entrar.';
+    }
+  }catch(err){
+    errorEl.textContent = 'Erro de conexão. Tente novamente.';
+  }
+  return false;
+}
+</script>
+</body>
+</html>
