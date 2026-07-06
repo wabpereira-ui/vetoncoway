@@ -83,6 +83,50 @@ e-mail automático, mantendo o controle nas mãos da mentora — adequado para o
 um programa de mentoria. Se no futuro o número de alunos crescer muito e isso virar
 trabalho demais para ela, dá para evoluir para recuperação por e-mail automática.
 
+## Como o assistente decide onde buscar a resposta
+
+O Agente Oncoway segue uma ordem de prioridade:
+
+1. **Primeiro, tenta responder só com o acervo** (os materiais carregados pela mentora).
+   Se conseguir, a resposta mostra um selo "Fonte consultada: ..." com o nome do material.
+2. **Se o acervo não cobrir a pergunta**, ele complementa com conhecimento geral de
+   veterinária e, se precisar, faz uma busca na internet (usando a ferramenta de busca
+   nativa da Anthropic). Nesse caso, a resposta sempre mostra um aviso visível: "⚠ Fora do
+   acervo oficial — conhecimento geral / busca na internet, confirme com a mentora".
+
+Isso vale tanto para o app web quanto para o WhatsApp.
+
+**Custo:** a busca na internet só é acionada quando o acervo não tem a resposta — ou seja,
+não gera custo extra nas perguntas que o material do curso já cobre. Quando acionada, tem um
+custo pequeno adicional por busca (cobrado pela Anthropic).
+
+## Banco de dados (evita perder o acervo e os cadastros de alunos)
+
+Por padrão, se a variável `DATABASE_URL` não estiver configurada, o app guarda tudo em
+arquivos locais (`docs.json`, `students.json`) — o que funciona, mas corre risco de se
+perder quando o Render reinicia o servidor (comum em planos gratuitos, que não têm disco
+permanente).
+
+**Recomendado:** configurar um banco de dados gratuito no Supabase, assim:
+
+1. Crie uma conta em [supabase.com](https://supabase.com) (tem plano gratuito).
+2. Crie um novo projeto (escolha uma senha forte para o banco — guarde ela).
+3. No painel do projeto, vá em **Project Settings → Database → Connection string**.
+4. Escolha a aba **"Transaction"** (modo pooler, recomendado para servidores como o Render)
+   e copie a URL. Ela se parece com:
+   `postgresql://postgres.xxxxx:[SUA-SENHA]@aws-0-regiao.pooler.supabase.com:6543/postgres`
+5. Troque `[SUA-SENHA]` pela senha que você criou no passo 2.
+6. No Render, vá em **Environment** e adicione:
+   - `DATABASE_URL` → cole essa string completa
+7. Redeploy o serviço.
+
+**Não precisa criar tabelas manualmente** — o servidor cria sozinho (`docs`, `students`)
+na primeira vez que roda, e ainda aproveita para copiar os 3 materiais de exemplo do
+`docs.json` para dentro do banco, se ele estiver vazio.
+
+A partir daí, tudo que a mentora cadastrar em `/admin` (materiais e alunos) fica guardado
+no Supabase — sobrevive a reinícios, redeploys, e trocas de plano no Render.
+
 ## Testando localmente antes de hospedar (opcional)
 
 ```bash
