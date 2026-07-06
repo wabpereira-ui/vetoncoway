@@ -53,6 +53,16 @@
 
     <h2>Materiais no acervo</h2>
     <div id="docList"></div>
+
+    <h2>Contas de alunos</h2>
+    <div class="panel">
+      <input id="studentName" type="text" placeholder="Nome do aluno (ex: João Silva)">
+      <input id="studentUsername" type="text" placeholder="Usuário (ex: joao.silva)">
+      <input id="studentPassword" type="text" placeholder="Senha (mínimo 6 caracteres)">
+      <button class="btn" onclick="addStudent()">Criar acesso</button>
+      <div id="studentStatus" class="status"></div>
+    </div>
+    <div id="studentList" style="margin-top:12px;"></div>
   </div>
 
 <script>
@@ -139,7 +149,51 @@ async function handleFileUpload(event){
 }
 
 loadDocs();
+
+async function loadStudents(){
+  const res = await fetch('/api/admin/students');
+  renderStudents(await res.json());
+}
+
+function renderStudents(students){
+  const el = document.getElementById('studentList');
+  el.innerHTML = '';
+  if(!students.length){ el.innerHTML = '<div class="status">Nenhum aluno cadastrado ainda.</div>'; return; }
+  students.forEach(s=>{
+    const card = document.createElement('div');
+    card.className = 'doc-card';
+    card.innerHTML = `<div class="doc-name">${escapeHtml(s.name)}</div>
+      <div class="doc-meta">usuário: ${escapeHtml(s.username)}</div>
+      <button onclick="removeStudent('${s.id}')">remover</button>`;
+    el.appendChild(card);
+  });
+}
+
+async function addStudent(){
+  const name = document.getElementById('studentName').value.trim();
+  const username = document.getElementById('studentUsername').value.trim();
+  const password = document.getElementById('studentPassword').value;
+  const status = document.getElementById('studentStatus');
+  if(!name || !username || !password){ status.textContent = 'Preencha nome, usuário e senha.'; return; }
+  const res = await fetch('/api/admin/students', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ name, username, password })
+  });
+  const data = await res.json();
+  if(!res.ok){ status.textContent = data.error || 'Erro ao criar acesso.'; return; }
+  renderStudents(data);
+  document.getElementById('studentName').value = '';
+  document.getElementById('studentUsername').value = '';
+  document.getElementById('studentPassword').value = '';
+  status.textContent = `Acesso criado para ${name} ✓`;
+}
+
+async function removeStudent(id){
+  const res = await fetch('/api/admin/students/'+id, { method:'DELETE' });
+  renderStudents(await res.json());
+}
+
+loadStudents();
 </script>
 </body>
 </html>
-
