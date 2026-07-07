@@ -17,7 +17,7 @@ try { Pool = require('pg').Pool; } catch (e) { Pool = null; }
 require('dotenv').config();
 
 const app = express();
-app.use(express.json({ limit: '12mb' }));
+app.use(express.json({ limit: '25mb' }));
 
 const PORT = process.env.PORT || 3000;
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN;
@@ -237,7 +237,7 @@ function parseCookies(req) {
 }
 function createSession(student, res, req) {
   const sessionId = crypto.randomBytes(24).toString('hex');
-  sessions.set(sessionId, { studentId: student.id, name: student.name, expires: Date.now() + SESSION_DURATION_MS });
+  sessions.set(sessionId, { studentId: student.id, name: student.name, expires: Date.now() + SESSION_DURATION_MS, history: [] });
   const secure = req.secure || req.headers['x-forwarded-proto'] === 'https';
   res.setHeader('Set-Cookie', `${SESSION_COOKIE}=${sessionId}; HttpOnly; Path=/; Max-Age=${SESSION_DURATION_MS / 1000}; SameSite=Lax${secure ? '; Secure' : ''}`);
 }
@@ -350,55 +350,44 @@ function retrieveContext(query, docs, topN = 5) {
 const SEM_COBERTURA = 'SEM_COBERTURA_NO_ACERVO';
 
 // Regra compartilhada: decide o ESTILO da resposta conforme o tipo de pergunta.
-// - Perguntas de DECISÃO CLÍNICA (indicação de tratamento, prognóstico, conduta, "isso precisa de X?")
-//   usam o estilo MENTOR: apresentam os fatores relevantes que faltam saber sobre o caso e fazem
-//   perguntas de acompanhamento antes de fechar uma orientação — para o aluno exercitar o raciocínio.
-// - Perguntas OBJETIVAS (dose, definição, valor de referência, "o que é X", "qual a dose de Y")
-//   são respondidas de forma direta e concisa, sem perguntas desnecessárias.
 const ESTILO_RESPOSTA = `Antes de responder, identifique o tipo da pergunta:
 - Se for uma PERGUNTA DE DECISÃO CLÍNICA (indicação de tratamento, prognóstico, conduta — ex: "esse caso precisa de quimioterapia?", "qual o prognóstico?", "vale a pena operar?"): responda no ESTILO MENTOR. Apresente brevemente os fatores relevantes que pesam nessa decisão (ex: grau histológico, margens, estadiamento, conforme o assunto) e faça 2-4 perguntas de acompanhamento para o aluno aplicar isso ao caso dele, antes de fechar uma orientação geral. O objetivo é ajudar o aluno a EXERCITAR o raciocínio clínico, não só entregar a resposta pronta.
 - Se for uma PERGUNTA OBJETIVA (dose, definição, valor de referência, dado factual direto — ex: "qual a dose de vincristina?", "o que é o índice mitótico?"): responda de forma direta e concisa, sem fazer perguntas de volta desnecessárias.`;
 
-const SYSTEM_PROMPT_ACERVO = `Você é um assistente de apoio ao ensino de um programa de mentoria em oncologia veterinária.
-Responda SOMENTE com base no CONTEXTO fornecido pelo usuário, que vem do acervo de aulas, artigos e livros do programa.
-Regras obrigatórias:
-1) Se o contexto NÃO contiver informação suficiente para responder à pergunta, responda EXATAMENTE e SOMENTE com o texto: ${SEM_COBERTURA}
-   (sem mais nada, nem explicação, nem pontuação extra) — isso aciona uma busca complementar automática.
-2) Se o contexto for suficiente, ${ESTILO_RESPOSTA}
-3) Use linguagem técnica adequada para alunos de pós-graduação em oncologia veterinária.
-4) Sempre que a resposta envolver dose de medicamento, inclua no fim: "⚠ Confirme esta dose com a fonte original e com a mentora antes de qualquer uso clínico."
-5) Indique ao final, entre parênteses, a fonte usada, ex: (Fonte: Aula 3 — Linfoma).`;
+// Prompt único (substituiu os três prompts separados de antes). Une acervo + conhecimento
+// geral + interpretação de exame + memória de conversa numa só chamada à IA — mais rápido,
+// mais barato, e funciona naturalmente com perguntas de acompanhamento ("e sobre isso que
+// perguntei antes?").
+const SYSTEM_PROMPT_MAIN = `Você é o Agente Oncoway, assistente de apoio a um programa de mentoria em oncologia veterinária.
+Você está em uma CONVERSA CONTÍNUA com o aluno — pode haver perguntas de acompanhamento referentes a mensagens
+anteriores da mesma conversa; use esse histórico normalmente, do jeito que um mentor faria numa conversa real.
 
-const SYSTEM_PROMPT_FALLBACK = `Você é um assistente de apoio a um programa de mentoria em oncologia veterinária.
-O acervo oficial do curso (aulas, artigos e livros selecionados pela mentora) NÃO cobre a pergunta do aluno.
-Responda usando seu conhecimento geral de medicina veterinária. Se precisar de informação atual, específica
-ou que exija verificação, use a ferramenta de busca na internet disponível.
-Regras obrigatórias:
-1) Comece a resposta deixando claro que esta informação NÃO vem dos materiais oficiais do curso — é conhecimento
-   geral e/ou pesquisa na internet, ainda não revisado pela mentora.
-2) ${ESTILO_RESPOSTA}
-3) Sempre que mencionar dose de medicamento, inclua: "⚠ Esta dose não foi validada pelos materiais do curso — confirme com a mentora antes de qualquer uso clínico."
-4) Seja técnico. Se usou busca na internet, mencione brevemente a fonte.`;
+Cada pergunta do aluno pode vir acompanhada de CONTEXTO do acervo oficial do curso, e/ou de imagens e textos de
+exames anexados. Você também pode ter acesso a uma ferramenta de busca na internet.
 
-const SYSTEM_PROMPT_EXAM = `Você é um assistente de apoio à interpretação clínica em um programa de mentoria em oncologia veterinária.
-O aluno está trazendo um caso ou anexando um exame (laboratorial ou de imagem) para discutir com apoio interpretativo,
-da mesma forma que um mentor faria durante uma sessão de caso clínico.
 Regras obrigatórias:
-1) Se houver CONTEXTO do acervo do curso relevante, use-o e cite a fonte entre parênteses. Caso contrário, baseie-se
-   no seu conhecimento geral de medicina veterinária (e pesquisa na internet, se a ferramenta estiver disponível e for útil).
-2) Comece deixando claro, em uma linha, que esta é uma interpretação de apoio ao raciocínio clínico — não um laudo
-   definitivo — e que o caso deve ser revisado com a mentora.
-3) ${ESTILO_RESPOSTA}
-4) Se a imagem/texto do exame não permitir uma leitura clara ou faltar informação essencial, diga isso e peça os
-   dados que faltam, em vez de supor ou inventar achados.
-5) Sempre que mencionar dose de medicamento, inclua: "⚠ Confirme esta dose com a mentora antes de qualquer uso clínico."`;
+1) Se o CONTEXTO do acervo for suficiente para responder, baseie-se nele e cite a fonte entre parênteses, ex: (Fonte: Aula 3 — Linfoma).
+2) Se o contexto não for suficiente (ou não houver contexto), responda com seu conhecimento geral de medicina
+   veterinária e, se precisar de algo atual ou específico, use a busca na internet — deixando claro na resposta
+   que essa parte não vem do material oficial do curso.
+3) Se houver imagem(ns) ou texto(s) de exame anexado(s), interprete-os como apoio ao raciocínio clínico do aluno,
+   deixando claro que não é um laudo definitivo e que o caso deve ser revisado com a mentora. Se a imagem/texto não
+   permitir uma leitura clara, diga isso e peça os dados que faltam, em vez de supor ou inventar achados.
+4) ${ESTILO_RESPOSTA}
+5) Sempre que mencionar dose de medicamento, inclua: "⚠ Confirme esta dose com a mentora antes de qualquer uso clínico."
+6) IMPORTANTE: sempre conclua seu raciocínio por completo — nunca interrompa a resposta no meio. Se a resposta for
+   longa, isso é aceitável; o que não pode acontecer é parar antes de fechar a ideia.
+7) Ao FINAL de cada resposta, em uma linha própria e por último, escreva EXATAMENTE uma destas duas tags (nada mais
+   nessa linha, sem explicação): [[FONTE:ACERVO]] se a resposta se baseou principalmente no acervo do curso, ou
+   [[FONTE:GERAL]] se baseou-se em conhecimento geral e/ou busca na internet. Essa tag é só para controle interno
+   do sistema — o aluno não vê essa parte.`;
 
-async function callClaude({ system, content, tools, maxTokens }) {
+async function callClaude({ system, messages, tools, maxTokens }) {
   const body = {
     model: 'claude-sonnet-4-6',
-    max_tokens: maxTokens || 800,
+    max_tokens: maxTokens || 2000,
     system,
-    messages: [{ role: 'user', content }]
+    messages
   };
   if (tools) body.tools = tools;
   const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -419,59 +408,57 @@ async function callClaude({ system, content, tools, maxTokens }) {
   return textBlocks.join('\n').trim();
 }
 
-// Cascata: 1) tenta responder só com o acervo. 2) se não achar, tenta conhecimento geral
-// + busca na internet, sempre avisando que a resposta não é do material oficial do curso.
-async function askClaudeCascade(question, contextBlock) {
-  const userContent = `CONTEXTO DISPONÍVEL:\n${contextBlock || '(nenhum trecho relevante encontrado no acervo)'}\n\nPERGUNTA DO ALUNO:\n${question}`;
-  const acervoAnswer = await callClaude({ system: SYSTEM_PROMPT_ACERVO, content: userContent });
+const HISTORY_MAX_MESSAGES = 16; // 8 trocas (pergunta+resposta) de memória por conversa
 
-  if (acervoAnswer === null) {
-    return { answer: 'Desculpe, tive um problema para consultar o acervo agora. Tente novamente em instantes.', tier: 'erro' };
+// Monta a mensagem do turno atual: contexto do acervo + textos de exame extraídos (se houver)
+// + a pergunta, mais quaisquer imagens anexadas (até 5).
+function buildTurnContent(question, contextBlock, images, examTexts) {
+  let textPart = `CONTEXTO DO ACERVO (se relevante):\n${contextBlock || '(nenhum trecho relevante encontrado no acervo)'}\n\n`;
+  if (examTexts && examTexts.length) {
+    examTexts.forEach((t, i) => { textPart += `TEXTO EXTRAÍDO DO EXAME ANEXADO ${i + 1}:\n${t}\n\n`; });
   }
-  if (acervoAnswer !== SEM_COBERTURA) {
-    return { answer: acervoAnswer, tier: 'acervo' };
-  }
+  textPart += `PERGUNTA DO ALUNO:\n${question}`;
 
-  const fallbackAnswer = await callClaude({
-    system: SYSTEM_PROMPT_FALLBACK,
-    content: `PERGUNTA DO ALUNO:\n${question}`,
-    tools: [{ type: 'web_search_20250305', name: 'web_search' }]
-  });
-  if (fallbackAnswer === null) {
-    return { answer: 'O acervo ainda não cobre esse assunto, e tive um problema ao buscar informação complementar. Sugiro perguntar diretamente à mentora.', tier: 'erro' };
+  if (images && images.length) {
+    const blocks = images.map(img => ({ type: 'image', source: { type: 'base64', media_type: img.mediaType, data: img.data } }));
+    return [...blocks, { type: 'text', text: textPart }];
   }
-  return { answer: fallbackAnswer, tier: 'fallback' };
+  return textPart;
 }
 
-// Interpretação de exame: usado quando o aluno anexa uma imagem (foto de exame) ou texto
-// extraído de um PDF. Combina contexto do acervo (se relevante) + conhecimento geral + visão.
-async function askClaudeExam(question, contextBlock, attachment) {
-  let textPart = `CONTEXTO DO ACERVO (se relevante):\n${contextBlock || '(nenhum trecho relevante encontrado no acervo)'}\n\n`;
-  if (attachment?.kind === 'examText') {
-    textPart += `TEXTO EXTRAÍDO DO EXAME ANEXADO:\n${attachment.text}\n\n`;
-  }
-  textPart += `PERGUNTA / CASO DO ALUNO:\n${question}`;
+// Chamada única, com memória de conversa (histórico guardado na sessão do aluno) e suporte
+// a múltiplos anexos (imagens e/ou textos de exame extraídos de PDF).
+async function askClaude(session, question, contextBlock, { images, examTexts } = {}) {
+  const turnContent = buildTurnContent(question, contextBlock, images, examTexts);
+  const history = session.history || [];
+  const messages = [...history, { role: 'user', content: turnContent }];
 
-  let content;
-  if (attachment?.kind === 'image') {
-    content = [
-      { type: 'image', source: { type: 'base64', media_type: attachment.mediaType, data: attachment.data } },
-      { type: 'text', text: textPart }
-    ];
-  } else {
-    content = textPart;
-  }
-
-  const answer = await callClaude({
-    system: SYSTEM_PROMPT_EXAM,
-    content,
+  const raw = await callClaude({
+    system: SYSTEM_PROMPT_MAIN,
+    messages,
     tools: [{ type: 'web_search_20250305', name: 'web_search' }],
-    maxTokens: 1300
+    maxTokens: 2000
   });
-  if (answer === null) {
-    return { answer: 'Desculpe, tive um problema para interpretar o exame agora. Tente novamente em instantes.', tier: 'erro' };
+
+  if (raw === null) {
+    return { answer: 'Desculpe, tive um problema para consultar o acervo agora. Tente novamente em instantes.', tier: 'erro' };
   }
-  return { answer, tier: 'exame' };
+
+  const tagMatch = raw.match(/\[\[FONTE:(ACERVO|GERAL)\]\]\s*$/i);
+  let tier = 'fallback';
+  let answer = raw;
+  if (tagMatch) {
+    tier = tagMatch[1].toUpperCase() === 'ACERVO' ? 'acervo' : 'fallback';
+    answer = raw.slice(0, tagMatch.index).trim();
+  }
+
+  // Guarda no histórico da sessão (só texto — não guarda as imagens de novo, para não pesar
+  // as próximas chamadas) e limita o tamanho para não crescer sem fim.
+  const historyQuestion = question || (images?.length || examTexts?.length ? '[anexo(s) de exame enviado(s)]' : question);
+  session.history = [...history, { role: 'user', content: historyQuestion }, { role: 'assistant', content: answer }];
+  while (session.history.length > HISTORY_MAX_MESSAGES) session.history.shift();
+
+  return { answer, tier };
 }
 
 // ---------- API usada pela tela dos alunos (exige login) ----------
@@ -483,21 +470,22 @@ app.get('/api/docs', requireStudentApi, async (req, res) => {
 
 app.post('/api/ask', requireStudentApi, async (req, res) => {
   try {
-    const { question, image, examText } = req.body;
-    if (!question) return res.status(400).json({ error: 'question é obrigatório' });
+    const { question, images, examTexts } = req.body;
+    if (!question && !(images?.length) && !(examTexts?.length)) {
+      return res.status(400).json({ error: 'question ou anexo é obrigatório' });
+    }
+    const safeImages = Array.isArray(images) ? images.slice(0, 5) : [];
+    const safeExamTexts = Array.isArray(examTexts) ? examTexts.slice(0, 5) : [];
+
     const docs = await loadDocs();
-    const topChunks = retrieveContext(question, docs);
+    const topChunks = retrieveContext(question || 'interpretação de exame', docs);
     const contextBlock = topChunks.map(c => `[Fonte: ${c.source}]\n${c.text}`).join('\n\n---\n\n');
     const sources = [...new Set(topChunks.map(c => c.source))];
 
-    let result;
-    if (image && image.data && image.mediaType) {
-      result = await askClaudeExam(question, contextBlock, { kind: 'image', mediaType: image.mediaType, data: image.data });
-    } else if (examText) {
-      result = await askClaudeExam(question, contextBlock, { kind: 'examText', text: examText });
-    } else {
-      result = await askClaudeCascade(question, contextBlock);
-    }
+    const result = await askClaude(req.student, question || 'Interprete o(s) exame(s) anexado(s).', contextBlock, {
+      images: safeImages,
+      examTexts: safeExamTexts
+    });
 
     res.json({ answer: result.answer, sources: result.tier === 'acervo' ? sources : [], tier: result.tier });
   } catch (err) {
@@ -580,6 +568,8 @@ async function sendWhatsAppMessage(to, body) {
   });
 }
 
+const whatsappSessions = new Map(); // telefone -> { history: [] }
+
 app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
   try {
@@ -588,7 +578,9 @@ app.post('/webhook', async (req, res) => {
     const docs = await loadDocs();
     const topChunks = retrieveContext(message.text.body, docs);
     const contextBlock = topChunks.map(c => `[Fonte: ${c.source}]\n${c.text}`).join('\n\n---\n\n');
-    const { answer } = await askClaudeCascade(message.text.body, contextBlock);
+    if (!whatsappSessions.has(message.from)) whatsappSessions.set(message.from, { history: [] });
+    const waSession = whatsappSessions.get(message.from);
+    const { answer } = await askClaude(waSession, message.text.body, contextBlock);
     await sendWhatsAppMessage(message.from, answer);
   } catch (err) {
     console.error('Erro ao processar mensagem do WhatsApp:', err);
