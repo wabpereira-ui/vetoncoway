@@ -928,11 +928,17 @@ app.get('/webhook', (req, res) => {
 });
 
 async function sendWhatsAppMessage(to, body) {
-  await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
+  const res = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${WHATSAPP_TOKEN}` },
     body: JSON.stringify({ messaging_product: 'whatsapp', to, text: { body } })
   });
+  const data = await res.json();
+  if (!res.ok) {
+    console.error('[WEBHOOK] Erro ao ENVIAR mensagem pela API do WhatsApp:', JSON.stringify(data));
+  } else {
+    console.log('[WEBHOOK] Mensagem enviada com sucesso para', to);
+  }
 }
 
 // Baixa uma mídia (foto/documento) enviada pelo aluno no WhatsApp. A API do WhatsApp
@@ -977,9 +983,12 @@ app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
   try {
     const message = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-    if (!message) return;
+    console.log('[WEBHOOK] payload recebido:', JSON.stringify(req.body).slice(0, 1500));
+    if (!message) { console.log('[WEBHOOK] nenhuma mensagem encontrada no payload (pode ser um evento de status, ex: "entregue").'); return; }
+    console.log(`[WEBHOOK] mensagem de ${message.from}, tipo: ${message.type}`);
 
     const student = await getStudentByPhone(message.from);
+    console.log('[WEBHOOK] aluno encontrado para esse telefone?', student ? `sim (${student.name})` : 'não');
     if (!student) {
       await sendWhatsAppMessage(message.from,
         'Este número não está cadastrado no programa de mentoria. Peça para a mentora liberar seu acesso e tente novamente.');
