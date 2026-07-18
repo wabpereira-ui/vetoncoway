@@ -919,6 +919,27 @@ app.delete('/api/admin/students/:id', requireAdmin, async (req, res) => {
 
 // ---------- WhatsApp ----------
 
+// Etapa que costuma faltar mesmo com o webhook verificado: inscrever o APP para
+// receber eventos da conta específica do WhatsApp Business (WABA). Sem isso, mensagens
+// reais não chegam, mesmo com a URL do webhook certinha. Acesse uma vez pelo navegador
+// (pede a senha da mentora) para resolver.
+app.get('/api/admin/whatsapp/subscribe', requireAdmin, async (req, res) => {
+  const wabaId = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID;
+  if (!wabaId) {
+    return res.status(400).json({ error: 'Defina a variável WHATSAPP_BUSINESS_ACCOUNT_ID no Render (é o "WhatsApp Business Account ID" que aparece no painel da Meta).' });
+  }
+  try {
+    const r = await fetch(`https://graph.facebook.com/v20.0/${wabaId}/subscribed_apps`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` }
+    });
+    const data = await r.json();
+    res.json({ ok: r.ok, resultadoDaMeta: data });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
