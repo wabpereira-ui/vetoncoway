@@ -69,6 +69,25 @@ async function initDb() {
       created_at TIMESTAMPTZ DEFAULT now()
     );
   `);
+  // Conversas salvas dos alunos (para reabrir depois, como no histórico do Claude).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS conversations (
+      id TEXT PRIMARY KEY,
+      student_id TEXT REFERENCES students(id) ON DELETE CASCADE,
+      title TEXT,
+      created_at TIMESTAMPTZ DEFAULT now(),
+      updated_at TIMESTAMPTZ DEFAULT now()
+    );
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS messages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
+  `);
   // Triagem Oncoway: ficha catalográfica estruturada por artigo (tipo de neoplasia, tópicos,
   // palavras-chave, resumo) — gerada uma vez por artigo, usada para melhorar a busca.
   await pool.query(`
@@ -255,6 +274,53 @@ async function deleteStudent(id) {
   let students = loadStudentsFile();
   students = students.filter(s => s.id !== id);
   saveStudentsFile(students);
+}
+
+// ---- Conversas salvas (historico persistente por aluno, como no Claude) ----
+async function listConversations(studentId) {
+  if (!useDb) return [];
+  const { rows } = await pool.query(
+    'SELECT id, title, updated_at FROM conversations WHERE student_id=$1 ORDER BY updated_at DESC',
+    [studentId]
+  );
+  return rows;
+}
+async function createConversation(studentId) {
+  const id = 'conv-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex');
+  if (!useDb) return id;
+  await pool.query('INSERT INTO conversations (id, student_id, title) VALUES ($1,$2,$3)', [id, studentId, null]);
+  return id;
+}
+async function getConversationOwner(conversationId) {
+  if (!useDb) return null;
+  const { rows } = await pool.query('SELECT student_id FROM conversations WHERE id=$1', [conversationId]);
+  return rows[0] ? rows[0].student_id : null;
+}
+async function deleteConversation(conversationId) {
+  if (!useDb) return;
+  await pool.query('DELETE FROM conversations WHERE id=$1', [conversationId]);
+}
+async function loadConversationMessages(conversationId) {
+  if (!useDb) return [];
+  const { rows } = await pool.query(
+    'SELECT role, content FROM messages WHERE conversation_id=$1 ORDER BY created_at ASC',
+    [conversationId]
+  );
+  return rows;
+}
+async function appendMessage(conversationId, role, content) {
+  if (!useDb) return;
+  const id = 'msg-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex');
+  await pool.query('INSERT INTO messages (id, conversation_id, role, content) VALUES ($1,$2,$3,$4)', [id, conversationId, role, content]);
+  await pool.query('UPDATE conversations SET updated_at = now() WHERE id=$1', [conversationId]);
+}
+async function maybeSetConversationTitle(conversationId, question) {
+  if (!useDb || !question) return;
+  const { rows } = await pool.query('SELECT title FROM conversations WHERE id=$1', [conversationId]);
+  if (rows[0] && !rows[0].title) {
+    const title = question.length > 60 ? question.slice(0, 57) + '...' : question;
+    await pool.query('UPDATE conversations SET title=$1 WHERE id=$2', [title, conversationId]);
+  }
 }
 
 // ---------- Sessões simples (cookie httpOnly + memória do servidor) ----------
@@ -606,9 +672,12 @@ function buildTurnContent(question, contextBlock, images, examTexts) {
 
 // Chamada única, com memória de conversa (histórico guardado na sessão do aluno) e suporte
 // a múltiplos anexos (imagens e/ou textos de exame extraídos de PDF).
-async function askClaude(session, question, contextBlock, { images, examTexts } = {}) {
+// Núcleo "puro": recebe o histórico (array de {role, content} em texto) e devolve a
+// resposta + a origem (acervo/geral), sem decidir sozinho onde guardar o histórico —
+// isso permite reaproveitar tanto com conversas salvas no banco quanto com a memória
+// de sessão simples (usada como retaguarda sem banco, e pelo WhatsApp).
+async function askClaudeCore(history, question, contextBlock, { images, examTexts } = {}) {
   const turnContent = buildTurnContent(question, contextBlock, images, examTexts);
-  const history = session.history || [];
   const messages = [...history, { role: 'user', content: turnContent }];
 
   const raw = await callClaude({
@@ -629,14 +698,19 @@ async function askClaude(session, question, contextBlock, { images, examTexts } 
     tier = tagMatch[1].toUpperCase() === 'ACERVO' ? 'acervo' : 'fallback';
     answer = raw.slice(0, tagMatch.index).trim();
   }
+  return { answer, tier };
+}
 
-  // Guarda no histórico da sessão (só texto — não guarda as imagens de novo, para não pesar
-  // as próximas chamadas) e limita o tamanho para não crescer sem fim.
+// Versão com memória de sessão simples (retaguarda sem banco de dados, e usada pelo WhatsApp).
+async function askClaude(session, question, contextBlock, { images, examTexts } = {}) {
+  const history = session.history || [];
+  const result = await askClaudeCore(history, question, contextBlock, { images, examTexts });
+
   const historyQuestion = question || (images?.length || examTexts?.length ? '[anexo(s) de exame enviado(s)]' : question);
-  session.history = [...history, { role: 'user', content: historyQuestion }, { role: 'assistant', content: answer }];
+  session.history = [...history, { role: 'user', content: historyQuestion }, { role: 'assistant', content: result.answer }];
   while (session.history.length > HISTORY_MAX_MESSAGES) session.history.shift();
 
-  return { answer, tier };
+  return result;
 }
 
 // ---------- API usada pela tela dos alunos (exige login) ----------
@@ -648,28 +722,66 @@ app.get('/api/docs', requireStudentApi, async (req, res) => {
 
 app.post('/api/ask', requireStudentApi, async (req, res) => {
   try {
-    const { question, images, examTexts } = req.body;
+    const { question, images, examTexts, conversationId } = req.body;
     if (!question && !(images?.length) && !(examTexts?.length)) {
       return res.status(400).json({ error: 'question ou anexo é obrigatório' });
     }
     const safeImages = Array.isArray(images) ? images.slice(0, 5) : [];
     const safeExamTexts = Array.isArray(examTexts) ? examTexts.slice(0, 5) : [];
+    const finalQuestion = question || 'Interprete o(s) exame(s) anexado(s).';
 
     const docs = await loadDocs();
-    const topChunks = await retrieveContext(question || 'interpretação de exame', docs);
+    const topChunks = await retrieveContext(finalQuestion, docs);
     const contextBlock = topChunks.map(c => `[Fonte: ${c.source}]\n${c.text}`).join('\n\n---\n\n');
     const sources = [...new Set(topChunks.map(c => c.source))];
 
-    const result = await askClaude(req.student, question || 'Interprete o(s) exame(s) anexado(s).', contextBlock, {
-      images: safeImages,
-      examTexts: safeExamTexts
-    });
+    let result;
+    if (useDb && conversationId) {
+      // Confere que a conversa pertence mesmo ao aluno logado, antes de usar/gravar nela.
+      const owner = await getConversationOwner(conversationId);
+      if (owner !== req.student.studentId) {
+        return res.status(403).json({ error: 'Conversa não encontrada.' });
+      }
+      const history = await loadConversationMessages(conversationId);
+      result = await askClaudeCore(history, finalQuestion, contextBlock, { images: safeImages, examTexts: safeExamTexts });
+      const historyQuestion = question || (safeImages.length || safeExamTexts.length ? '[anexo(s) de exame enviado(s)]' : question);
+      await appendMessage(conversationId, 'user', historyQuestion);
+      await appendMessage(conversationId, 'assistant', result.answer);
+      await maybeSetConversationTitle(conversationId, question);
+    } else {
+      // Retaguarda sem banco (ou sem conversationId): memória de sessão simples, como antes.
+      result = await askClaude(req.student, finalQuestion, contextBlock, { images: safeImages, examTexts: safeExamTexts });
+    }
 
     res.json({ answer: result.answer, sources: result.tier === 'acervo' ? sources : [], tier: result.tier });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Erro interno' });
   }
+});
+
+// ---------- Conversas salvas do aluno (histórico persistente, como no Claude) ----------
+
+app.get('/api/conversations', requireStudentApi, async (req, res) => {
+  res.json(await listConversations(req.student.studentId));
+});
+
+app.post('/api/conversations', requireStudentApi, async (req, res) => {
+  const id = await createConversation(req.student.studentId);
+  res.json({ id });
+});
+
+app.get('/api/conversations/:id/messages', requireStudentApi, async (req, res) => {
+  const owner = await getConversationOwner(req.params.id);
+  if (owner !== req.student.studentId) return res.status(403).json({ error: 'Conversa não encontrada.' });
+  res.json(await loadConversationMessages(req.params.id));
+});
+
+app.delete('/api/conversations/:id', requireStudentApi, async (req, res) => {
+  const owner = await getConversationOwner(req.params.id);
+  if (owner !== req.student.studentId) return res.status(403).json({ error: 'Conversa não encontrada.' });
+  await deleteConversation(req.params.id);
+  res.json({ ok: true });
 });
 
 // ---------- Área da mentora: acervo ----------
