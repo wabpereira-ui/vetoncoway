@@ -69,6 +69,9 @@ async function initDb() {
       created_at TIMESTAMPTZ DEFAULT now()
     );
   `);
+  // Telefone de WhatsApp (opcional) — usado para restringir o bot só a alunos matriculados.
+  // ALTER com IF NOT EXISTS garante que funciona tanto em bancos novos quanto já existentes.
+  await pool.query(`ALTER TABLE students ADD COLUMN IF NOT EXISTS phone TEXT;`);
   // Conversas salvas dos alunos (para reabrir depois, como no histórico do Claude).
   await pool.query(`
     CREATE TABLE IF NOT EXISTS conversations (
@@ -191,21 +194,37 @@ async function loadStudents() {
 
 // Cria um "convite" — nome + e-mail, ainda sem senha. O aluno define a senha
 // dele mesmo na tela de "Primeiro acesso".
-async function inviteStudent(name, email) {
+function normalizePhone(phone) {
+  return (phone || '').replace(/\D/g, ''); // só dígitos, para comparar com o formato que o WhatsApp envia
+}
+
+async function inviteStudent(name, email, phone) {
   const emailNorm = email.trim().toLowerCase();
+  const phoneNorm = phone ? normalizePhone(phone) : null;
   const id = 'aluno-' + Date.now();
   if (useDb) {
     const existing = await pool.query('SELECT id FROM students WHERE email=$1', [emailNorm]);
     if (existing.rows.length) throw new Error('Já existe um convite ou conta com esse e-mail.');
-    await pool.query('INSERT INTO students (id, name, email, password_set) VALUES ($1,$2,$3,false)', [id, name, emailNorm]);
-    return { id, name, email: emailNorm };
+    await pool.query('INSERT INTO students (id, name, email, phone, password_set) VALUES ($1,$2,$3,$4,false)', [id, name, emailNorm, phoneNorm]);
+    return { id, name, email: emailNorm, phone: phoneNorm };
   }
   const students = loadStudentsFile();
   if (students.some(s => s.email === emailNorm)) throw new Error('Já existe um convite ou conta com esse e-mail.');
-  const student = { id, name, email: emailNorm, passwordSet: false, salt: null, hash: null };
+  const student = { id, name, email: emailNorm, phone: phoneNorm, passwordSet: false, salt: null, hash: null };
   students.push(student);
   saveStudentsFile(students);
   return student;
+}
+
+async function getStudentByPhone(phone) {
+  const phoneNorm = normalizePhone(phone);
+  if (!phoneNorm) return null;
+  if (useDb) {
+    const { rows } = await pool.query('SELECT id, name, phone FROM students WHERE phone=$1', [phoneNorm]);
+    return rows[0] || null;
+  }
+  const student = loadStudentsFile().find(s => normalizePhone(s.phone) === phoneNorm);
+  return student || null;
 }
 
 // Primeiro acesso: o aluno define a própria senha para um convite existente.
@@ -846,28 +865,46 @@ app.delete('/api/admin/doses/:id', requireAdmin, async (req, res) => {
 
 // ---------- Área da mentora: convites e contas dos alunos ----------
 
+function publicStudentFields(s) {
+  return { id: s.id, name: s.name, email: s.email, phone: s.phone || '', passwordSet: s.passwordSet };
+}
+
 app.get('/api/admin/students', requireAdmin, async (req, res) => {
-  const students = (await loadStudents()).map(s => ({ id: s.id, name: s.name, email: s.email, passwordSet: s.passwordSet }));
+  const students = (await loadStudents()).map(publicStudentFields);
   res.json(students);
 });
 
 app.post('/api/admin/students', requireAdmin, async (req, res) => {
-  const { name, email } = req.body;
+  const { name, email, phone } = req.body;
   if (!name || !email) return res.status(400).json({ error: 'name e email são obrigatórios' });
   if (!email.includes('@')) return res.status(400).json({ error: 'E-mail inválido.' });
   try {
-    await inviteStudent(name, email);
-    const students = (await loadStudents()).map(s => ({ id: s.id, name: s.name, email: s.email, passwordSet: s.passwordSet }));
+    await inviteStudent(name, email, phone);
+    const students = (await loadStudents()).map(publicStudentFields);
     res.json(students);
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
 });
 
+app.post('/api/admin/students/:id/phone', requireAdmin, async (req, res) => {
+  const { phone } = req.body;
+  const phoneNorm = phone ? normalizePhone(phone) : null;
+  if (useDb) {
+    await pool.query('UPDATE students SET phone=$1 WHERE id=$2', [phoneNorm, req.params.id]);
+  } else {
+    const students = loadStudentsFile();
+    const student = students.find(s => s.id === req.params.id);
+    if (student) { student.phone = phoneNorm; saveStudentsFile(students); }
+  }
+  const students = (await loadStudents()).map(publicStudentFields);
+  res.json(students);
+});
+
 app.post('/api/admin/students/:id/reset', requireAdmin, async (req, res) => {
   try {
     await resetStudentPassword(req.params.id);
-    const students = (await loadStudents()).map(s => ({ id: s.id, name: s.name, email: s.email, passwordSet: s.passwordSet }));
+    const students = (await loadStudents()).map(publicStudentFields);
     res.json(students);
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -876,7 +913,7 @@ app.post('/api/admin/students/:id/reset', requireAdmin, async (req, res) => {
 
 app.delete('/api/admin/students/:id', requireAdmin, async (req, res) => {
   await deleteStudent(req.params.id);
-  const students = (await loadStudents()).map(s => ({ id: s.id, name: s.name, email: s.email, passwordSet: s.passwordSet }));
+  const students = (await loadStudents()).map(publicStudentFields);
   res.json(students);
 });
 
@@ -898,20 +935,92 @@ async function sendWhatsAppMessage(to, body) {
   });
 }
 
+// Baixa uma mídia (foto/documento) enviada pelo aluno no WhatsApp. A API do WhatsApp
+// funciona em duas etapas: primeiro pega a URL temporária do arquivo, depois baixa o
+// conteúdo binário de fato — as duas etapas exigem o token de acesso.
+async function downloadWhatsAppMedia(mediaId) {
+  const metaRes = await fetch(`https://graph.facebook.com/v20.0/${mediaId}`, {
+    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` }
+  });
+  const meta = await metaRes.json();
+  if (!meta.url) throw new Error('Não foi possível obter a URL da mídia do WhatsApp.');
+  const fileRes = await fetch(meta.url, { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` } });
+  const buffer = Buffer.from(await fileRes.arrayBuffer());
+  return { buffer, mimeType: meta.mime_type || '' };
+}
+
+// Extrai texto de um PDF recebido pelo WhatsApp (server-side, sem depender do navegador).
+async function extractPdfTextServerSide(buffer) {
+  try {
+    const pdfParse = require('pdf-parse');
+    const data = await pdfParse(buffer);
+    return (data.text || '').trim();
+  } catch (err) {
+    console.error('Erro ao extrair texto do PDF (WhatsApp):', err.message);
+    return '';
+  }
+}
+
+// Adapta a formatação markdown (pensada para o app web) ao estilo simples do WhatsApp:
+// **negrito** -> *negrito* (WhatsApp usa um asterisco só), remove cerquilhas de título, etc.
+function toWhatsAppFormatting(text) {
+  return text
+    .replace(/\*\*(.+?)\*\*/g, '*$1*')
+    .replace(/^#{1,6}\s*/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 const whatsappSessions = new Map(); // telefone -> { history: [] }
 
 app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
   try {
     const message = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-    if (!message || message.type !== 'text') return;
+    if (!message) return;
+
+    const student = await getStudentByPhone(message.from);
+    if (!student) {
+      await sendWhatsAppMessage(message.from,
+        'Este número não está cadastrado no programa de mentoria. Peça para a mentora liberar seu acesso e tente novamente.');
+      return;
+    }
+
+    let question = null;
+    let images = [];
+    let examTexts = [];
+
+    if (message.type === 'text') {
+      question = message.text.body;
+    } else if (message.type === 'image') {
+      const { buffer, mimeType } = await downloadWhatsAppMedia(message.image.id);
+      images.push({ mediaType: mimeType || 'image/jpeg', data: buffer.toString('base64') });
+      question = message.image.caption || 'Interprete a imagem do exame anexada.';
+    } else if (message.type === 'document') {
+      const { buffer, mimeType } = await downloadWhatsAppMedia(message.document.id);
+      if (mimeType === 'application/pdf') {
+        const text = await extractPdfTextServerSide(buffer);
+        if (text.length < 30) {
+          await sendWhatsAppMessage(message.from, 'Não consegui ler texto desse PDF (pode ser um documento escaneado). Tente enviar como foto (imagem) em vez de PDF.');
+          return;
+        }
+        examTexts.push(text);
+        question = message.document.caption || 'Interprete o exame anexado.';
+      } else {
+        await sendWhatsAppMessage(message.from, 'Por enquanto só consigo ler fotos e arquivos PDF de exame — esse formato de arquivo não é suportado.');
+        return;
+      }
+    } else {
+      return; // outros tipos (áudio, figurinha, etc.) são ignorados por ora
+    }
+
     const docs = await loadDocs();
-    const topChunks = await retrieveContext(message.text.body, docs);
+    const topChunks = await retrieveContext(question, docs);
     const contextBlock = topChunks.map(c => `[Fonte: ${c.source}]\n${c.text}`).join('\n\n---\n\n');
     if (!whatsappSessions.has(message.from)) whatsappSessions.set(message.from, { history: [] });
     const waSession = whatsappSessions.get(message.from);
-    const { answer } = await askClaude(waSession, message.text.body, contextBlock);
-    await sendWhatsAppMessage(message.from, answer);
+    const { answer } = await askClaude(waSession, question, contextBlock, { images, examTexts });
+    await sendWhatsAppMessage(message.from, toWhatsAppFormatting(answer));
   } catch (err) {
     console.error('Erro ao processar mensagem do WhatsApp:', err);
   }
