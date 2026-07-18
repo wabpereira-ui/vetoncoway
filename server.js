@@ -108,17 +108,30 @@ async function initDb() {
 }
 
 // ---- Acervo (docs) ----
+// Cache em memória: evita buscar o texto completo de TODOS os artigos no banco a cada
+// pergunta de aluno (isso estava consumindo o egress do Supabase rapidamente). O cache só
+// é renovado quando um material é adicionado/removido, ou a cada 10 minutos por segurança.
+let _docsCache = null;
+let _docsCacheAt = 0;
+const DOCS_CACHE_TTL_MS = 10 * 60 * 1000;
+
 async function loadDocs() {
   if (useDb) {
+    if (_docsCache && (Date.now() - _docsCacheAt) < DOCS_CACHE_TTL_MS) return _docsCache;
     const { rows } = await pool.query('SELECT id, name, text FROM docs ORDER BY created_at ASC');
+    _docsCache = rows;
+    _docsCacheAt = Date.now();
     return rows;
   }
   return JSON.parse(fs.readFileSync(DOCS_PATH, 'utf8'));
 }
+function invalidateDocsCache() { _docsCache = null; }
+
 async function addDoc(name, text) {
   const id = 'doc-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex');
   if (useDb) {
     await pool.query('INSERT INTO docs (id, name, text) VALUES ($1,$2,$3)', [id, name, text]);
+    invalidateDocsCache();
     return id;
   }
   const docs = JSON.parse(fs.readFileSync(DOCS_PATH, 'utf8'));
@@ -129,6 +142,7 @@ async function addDoc(name, text) {
 async function deleteDoc(id) {
   if (useDb) {
     await pool.query('DELETE FROM docs WHERE id=$1', [id]);
+    invalidateDocsCache();
     return;
   }
   let docs = JSON.parse(fs.readFileSync(DOCS_PATH, 'utf8'));
@@ -360,8 +374,13 @@ function chunkText(text) {
 function normalize(s) {
   return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
+let _metaCache = null;
+let _metaCacheAt = 0;
+const META_CACHE_TTL_MS = 10 * 60 * 1000;
+
 async function loadMetadataMap() {
   if (!useDb) return {};
+  if (_metaCache && (Date.now() - _metaCacheAt) < META_CACHE_TTL_MS) return _metaCache;
   const { rows } = await pool.query('SELECT * FROM doc_metadata');
   const map = {};
   rows.forEach(r => {
@@ -373,8 +392,11 @@ async function loadMetadataMap() {
       tipo_documento: r.tipo_documento || ''
     };
   });
+  _metaCache = map;
+  _metaCacheAt = Date.now();
   return map;
 }
+function invalidateMetaCache() { _metaCache = null; }
 
 async function retrieveContext(query, docs, topN = 5) {
   const qWords = normalize(query).split(/\W+/).filter(w => w.length > 3);
@@ -471,6 +493,7 @@ async function saveMetadata(docId, docName, meta) {
       );
     }
   }
+  invalidateMetaCache();
 }
 
 async function getCatalogStatus() {
