@@ -14,19 +14,33 @@
   }
   *{box-sizing:border-box;}
   body{ margin:0; background:var(--paper); color:var(--ink); font-family:'IBM Plex Sans',sans-serif; }
-  .header{ padding:22px 28px 18px; border-bottom:2px solid var(--navy); background:var(--card); }
+  .header{ padding:22px 28px 0; border-bottom:2px solid var(--navy); background:var(--card); }
   .eyebrow{ font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:2.5px; color:var(--sage-dark); text-transform:uppercase; margin-bottom:6px; }
   .title{ font-family:'Source Serif 4',serif; font-weight:700; font-size:24px; color:var(--navy); margin:0; }
-  .subtitle{ font-size:13.5px; color:var(--ink-soft); margin-top:4px; }
+  .subtitle{ font-size:13.5px; color:var(--ink-soft); margin:4px 0 18px; }
+
+  .tabs{ display:flex; gap:4px; }
+  .tab{
+    font-family:'IBM Plex Mono',monospace; font-size:12px; letter-spacing:.5px; text-transform:uppercase;
+    color:var(--ink-soft); background:none; border:none; border-bottom:3px solid transparent;
+    padding:10px 16px; cursor:pointer;
+  }
+  .tab.active{ color:var(--navy); border-bottom-color:var(--sage); font-weight:600; }
+  .tab:hover{ color:var(--sage-dark); }
+
   .wrap{ max-width:760px; margin:28px auto; padding:0 20px; }
+  .page{ display:none; }
+  .page.active{ display:block; }
+
   h2{ font-family:'IBM Plex Mono',monospace; font-size:12px; letter-spacing:2px; text-transform:uppercase; color:var(--navy); margin:28px 0 12px; }
+  h2:first-child{ margin-top:0; }
   .doc-card{ background:var(--card); border:1px solid var(--line); border-left:3px solid var(--sage); border-radius:2px; padding:12px 14px; margin-bottom:8px; position:relative; }
   .doc-card .doc-name{ font-size:14px; font-weight:600; color:var(--navy); }
   .doc-card .doc-meta{ font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--ink-soft); margin-top:2px; }
   .doc-card button{ position:absolute; top:12px; right:12px; background:none; border:none; color:var(--alert); font-size:12px; cursor:pointer; font-family:'IBM Plex Mono',monospace; }
   .panel{ background:var(--card); border:1px solid var(--line); border-radius:4px; padding:18px; }
   label.upload-btn{ display:inline-block; cursor:pointer; font-family:'IBM Plex Mono',monospace; font-size:12px; text-transform:uppercase; letter-spacing:.5px; background:none; color:var(--sage-dark); border:1px solid var(--sage-dark); border-radius:3px; padding:9px 14px; margin-bottom:12px; }
-  input[type=text], textarea{ width:100%; font-family:'IBM Plex Sans',sans-serif; font-size:14px; padding:10px 12px; border:1px solid var(--line); border-radius:3px; margin-bottom:10px; }
+  input[type=text], input[type=email], textarea{ width:100%; font-family:'IBM Plex Sans',sans-serif; font-size:14px; padding:10px 12px; border:1px solid var(--line); border-radius:3px; margin-bottom:10px; }
   textarea{ min-height:140px; resize:vertical; }
   .btn{ font-family:'IBM Plex Mono',monospace; font-size:12.5px; letter-spacing:.5px; text-transform:uppercase; background:var(--sage-dark); color:#fff; border:none; border-radius:3px; padding:10px 16px; cursor:pointer; }
   .btn:hover{ background:var(--navy); }
@@ -37,58 +51,74 @@
   <div class="header">
     <div class="eyebrow">Área restrita · Mentora</div>
     <h1 class="title">Agente Oncoway — Gerenciar Acervo</h1>
-    <div class="subtitle">Adicione ou remova os materiais consultados pelo assistente (alunos não têm acesso a esta página).</div>
+    <div class="subtitle">Alunos não têm acesso a esta página.</div>
+    <div class="tabs">
+      <button class="tab active" id="tabBtn-acervo" onclick="showPage('acervo')">📚 Acervo</button>
+      <button class="tab" id="tabBtn-triagem" onclick="showPage('triagem')">🔎 Triagem Oncoway</button>
+      <button class="tab" id="tabBtn-alunos" onclick="showPage('alunos')">🎓 Alunos</button>
+    </div>
   </div>
 
   <div class="wrap">
-    <div class="panel">
-      <label class="upload-btn" for="pdfInput">📄 Enviar PDF ou TXT</label>
-      <input id="pdfInput" type="file" accept=".pdf,.txt" multiple style="display:none;" onchange="handleFileUpload(event)">
-      <div id="uploadStatus" class="status"></div>
-      <div style="font-size:12px; color:var(--ink-soft); margin:10px 0;">Aulas em vídeo/áudio: transcreva primeiro e cole o texto abaixo, ou envie como .txt.</div>
-      <input id="docTitle" type="text" placeholder="Fonte (ex: Aula 4 — Linfoma, ou nome do artigo)">
-      <textarea id="docText" placeholder="Ou cole aqui o texto do artigo, capítulo ou transcrição da aula..."></textarea>
-      <button class="btn" onclick="addDocument()">Salvar no acervo</button>
-    </div>
 
-    <h2>Materiais no acervo</h2>
-    <div id="docList"></div>
-
-    <h2>Triagem Oncoway <span style="font-weight:400; font-size:11px; color:var(--ink-soft); text-transform:none; letter-spacing:0;">— agente de catalogação do acervo</span></h2>
-    <div class="panel">
-      <div style="font-size:12px; color:var(--ink-soft); margin-bottom:12px;">
-        Lê cada artigo uma vez e extrai uma ficha (tipo de neoplasia, tópicos, palavras-chave) para melhorar a busca,
-        além de separar as doses/protocolos mencionados numa lista própria para você revisar.
+    <!-- ABA: ACERVO -->
+    <div class="page active" id="page-acervo">
+      <h2>Adicionar material</h2>
+      <div class="panel">
+        <label class="upload-btn" for="pdfInput">📄 Enviar PDF ou TXT</label>
+        <input id="pdfInput" type="file" accept=".pdf,.txt" multiple style="display:none;" onchange="handleFileUpload(event)">
+        <div id="uploadStatus" class="status"></div>
+        <div style="font-size:12px; color:var(--ink-soft); margin:10px 0;">Aulas em vídeo/áudio: transcreva primeiro e cole o texto abaixo, ou envie como .txt.</div>
+        <input id="docTitle" type="text" placeholder="Fonte (ex: Aula 4 — Linfoma, ou nome do artigo)">
+        <textarea id="docText" placeholder="Ou cole aqui o texto do artigo, capítulo ou transcrição da aula..."></textarea>
+        <button class="btn" onclick="addDocument()">Salvar no acervo</button>
       </div>
-      <div id="catalogStatus" class="status" style="margin-bottom:10px;">Carregando status...</div>
-      <button class="btn" id="catalogBtn" onclick="runCatalogBatch()">Catalogar pendentes</button>
+
+      <h2>Materiais no acervo</h2>
+      <div id="docList"></div>
     </div>
 
-    <details style="margin-top:10px;">
-      <summary style="cursor:pointer; font-family:'IBM Plex Mono',monospace; font-size:12px; letter-spacing:.5px; text-transform:uppercase; color:var(--sage-dark);">+ Ver doses/protocolos extraídos pelo Triagem Oncoway</summary>
-      <div style="margin-top:10px;" id="doseList"></div>
-    </details>
-
-    <h2>Alunos</h2>
-    <div class="panel">
-      <div style="font-size:12px; color:var(--ink-soft); margin-bottom:12px;">Cadastre o nome e e-mail do aluno — ele mesmo cria a senha na tela de "Primeiro acesso".</div>
-      <input id="studentName" type="text" placeholder="Nome do aluno (ex: João Silva)">
-      <input id="studentEmail" type="email" placeholder="E-mail do aluno">
-      <button class="btn" onclick="addStudent()">Convidar aluno</button>
-      <div id="studentStatus" class="status"></div>
-    </div>
-
-    <details style="margin-top:10px;">
-      <summary style="cursor:pointer; font-family:'IBM Plex Mono',monospace; font-size:12px; letter-spacing:.5px; text-transform:uppercase; color:var(--sage-dark);">+ Convidar vários alunos de uma vez</summary>
-      <div class="panel" style="margin-top:10px;">
-        <div style="font-size:12px; color:var(--ink-soft); margin-bottom:10px;">Um aluno por linha, no formato <code>Nome, e-mail</code>. Exemplo:<br><code>João Silva, joao@email.com</code><br><code>Maria Souza, maria@email.com</code></div>
-        <textarea id="bulkStudents" placeholder="João Silva, joao@email.com&#10;Maria Souza, maria@email.com" style="min-height:120px;"></textarea>
-        <button class="btn" onclick="addStudentsBulk()">Convidar todos</button>
-        <div id="bulkStatus" class="status" style="white-space:pre-line; margin-top:8px;"></div>
+    <!-- ABA: TRIAGEM ONCOWAY -->
+    <div class="page" id="page-triagem">
+      <h2>Triagem Oncoway <span style="font-weight:400; text-transform:none; letter-spacing:0;">— agente de catalogação</span></h2>
+      <div class="panel">
+        <div style="font-size:12px; color:var(--ink-soft); margin-bottom:12px;">
+          Lê cada artigo uma vez e extrai uma ficha (tipo de neoplasia, tópicos, palavras-chave) para melhorar a busca,
+          além de separar as doses/protocolos mencionados numa lista própria para você revisar.
+        </div>
+        <div id="catalogStatus" class="status" style="margin-bottom:10px;">Carregando status...</div>
+        <button class="btn" id="catalogBtn" onclick="runCatalogBatch()">Catalogar pendentes</button>
       </div>
-    </details>
 
-    <div id="studentList" style="margin-top:12px;"></div>
+      <h2>Doses/protocolos extraídos</h2>
+      <div id="doseList"></div>
+    </div>
+
+    <!-- ABA: ALUNOS -->
+    <div class="page" id="page-alunos">
+      <h2>Convidar aluno</h2>
+      <div class="panel">
+        <div style="font-size:12px; color:var(--ink-soft); margin-bottom:12px;">Cadastre o nome e e-mail do aluno — ele mesmo cria a senha na tela de "Primeiro acesso".</div>
+        <input id="studentName" type="text" placeholder="Nome do aluno (ex: João Silva)">
+        <input id="studentEmail" type="email" placeholder="E-mail do aluno">
+        <button class="btn" onclick="addStudent()">Convidar aluno</button>
+        <div id="studentStatus" class="status"></div>
+      </div>
+
+      <details style="margin-top:10px;">
+        <summary style="cursor:pointer; font-family:'IBM Plex Mono',monospace; font-size:12px; letter-spacing:.5px; text-transform:uppercase; color:var(--sage-dark);">+ Convidar vários alunos de uma vez</summary>
+        <div class="panel" style="margin-top:10px;">
+          <div style="font-size:12px; color:var(--ink-soft); margin-bottom:10px;">Um aluno por linha, no formato <code>Nome, e-mail</code>. Exemplo:<br><code>João Silva, joao@email.com</code><br><code>Maria Souza, maria@email.com</code></div>
+          <textarea id="bulkStudents" placeholder="João Silva, joao@email.com&#10;Maria Souza, maria@email.com" style="min-height:120px;"></textarea>
+          <button class="btn" onclick="addStudentsBulk()">Convidar todos</button>
+          <div id="bulkStatus" class="status" style="white-space:pre-line; margin-top:8px;"></div>
+        </div>
+      </details>
+
+      <h2>Alunos cadastrados</h2>
+      <div id="studentList"></div>
+    </div>
+
   </div>
 
 <script>
@@ -97,6 +127,14 @@ if(window['pdfjsLib']){
 }
 
 function escapeHtml(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function showPage(name){
+  ['acervo','triagem','alunos'].forEach(p=>{
+    document.getElementById('page-'+p).classList.toggle('active', p===name);
+    document.getElementById('tabBtn-'+p).classList.toggle('active', p===name);
+  });
+  try{ localStorage.setItem('oncoway_admin_tab', name); }catch(e){}
+}
 
 async function loadDocs(){
   const res = await fetch('/api/admin/docs');
@@ -220,32 +258,26 @@ async function runCatalogBatch(){
   loadDoses();
 }
 
+function doseCardHtml(d){
+  return `<div class="doc-card">
+      <div class="doc-name">${escapeHtml(d.medicamento || '(sem nome)')} — ${escapeHtml(d.dose || '')}</div>
+      <div class="doc-meta">${escapeHtml(d.indicacao || '')} ${d.especie ? '· ' + escapeHtml(d.especie) : ''} · fonte: ${escapeHtml(d.fonte_nome || '')}</div>
+      <button onclick="removeDose('${d.id}')">remover</button>
+    </div>`;
+}
+
 async function loadDoses(){
   const res = await fetch('/api/admin/doses');
   const doses = await res.json();
   const el = document.getElementById('doseList');
-  if(!doses.length){ el.innerHTML = '<div class="status">Nenhuma dose extraída ainda (catalogue o acervo primeiro).</div>'; return; }
-  el.innerHTML = doses.map(d => `
-    <div class="doc-card">
-      <div class="doc-name">${escapeHtml(d.medicamento || '(sem nome)')} — ${escapeHtml(d.dose || '')}</div>
-      <div class="doc-meta">${escapeHtml(d.indicacao || '')} ${d.especie ? '· ' + escapeHtml(d.especie) : ''} · fonte: ${escapeHtml(d.fonte_nome || '')}</div>
-      <button onclick="removeDose('${d.id}')">remover</button>
-    </div>
-  `).join('');
+  el.innerHTML = doses.length ? doses.map(doseCardHtml).join('') : '<div class="status">Nenhuma dose extraída ainda (catalogue o acervo primeiro).</div>';
 }
 
 async function removeDose(id){
   const res = await fetch('/api/admin/doses/'+id, { method:'DELETE' });
   const doses = await res.json();
   const el = document.getElementById('doseList');
-  if(!doses.length){ el.innerHTML = '<div class="status">Nenhuma dose extraída ainda.</div>'; return; }
-  el.innerHTML = doses.map(d => `
-    <div class="doc-card">
-      <div class="doc-name">${escapeHtml(d.medicamento || '(sem nome)')} — ${escapeHtml(d.dose || '')}</div>
-      <div class="doc-meta">${escapeHtml(d.indicacao || '')} ${d.especie ? '· ' + escapeHtml(d.especie) : ''} · fonte: ${escapeHtml(d.fonte_nome || '')}</div>
-      <button onclick="removeDose('${d.id}')">remover</button>
-    </div>
-  `).join('');
+  el.innerHTML = doses.length ? doses.map(doseCardHtml).join('') : '<div class="status">Nenhuma dose extraída ainda.</div>';
 }
 
 loadCatalogStatus();
@@ -338,6 +370,12 @@ async function removeStudent(id){
 }
 
 loadStudents();
+
+// Lembra a última aba usada
+try{
+  const savedTab = localStorage.getItem('oncoway_admin_tab');
+  if(savedTab) showPage(savedTab);
+}catch(e){}
 </script>
 </body>
 </html>
