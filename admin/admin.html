@@ -101,6 +101,7 @@
         <div style="font-size:12px; color:var(--ink-soft); margin-bottom:12px;">Cadastre o nome e e-mail do aluno — ele mesmo cria a senha na tela de "Primeiro acesso".</div>
         <input id="studentName" type="text" placeholder="Nome do aluno (ex: João Silva)">
         <input id="studentEmail" type="email" placeholder="E-mail do aluno">
+        <input id="studentPhone" type="text" placeholder="WhatsApp (opcional, ex: 5511999998888)">
         <button class="btn" onclick="addStudent()">Convidar aluno</button>
         <div id="studentStatus" class="status"></div>
       </div>
@@ -330,31 +331,45 @@ function renderStudents(students){
   if(!students.length){ el.innerHTML = '<div class="status">Nenhum aluno cadastrado ainda.</div>'; return; }
   students.forEach(s=>{
     const statusLabel = s.passwordSet ? 'ativo' : 'aguardando primeiro acesso';
+    const phoneLabel = s.phone ? `· WhatsApp: ${escapeHtml(s.phone)}` : '· sem WhatsApp cadastrado';
     const card = document.createElement('div');
     card.className = 'doc-card';
-    card.style.paddingRight = '110px';
+    card.style.paddingRight = '150px';
     card.innerHTML = `<div class="doc-name">${escapeHtml(s.name)}</div>
-      <div class="doc-meta">${escapeHtml(s.email)} · ${statusLabel}</div>
-      <button style="right:70px;" onclick="resetStudent('${s.id}')" title="Resetar senha (aluno esqueceu)">resetar</button>
+      <div class="doc-meta">${escapeHtml(s.email)} · ${statusLabel} ${phoneLabel}</div>
+      <button style="right:110px;" onclick="editPhone('${s.id}','${escapeHtml(s.phone||'')}')" title="Definir/editar número de WhatsApp">whatsapp</button>
+      <button style="right:60px;" onclick="resetStudent('${s.id}')" title="Resetar senha (aluno esqueceu)">resetar</button>
       <button onclick="removeStudent('${s.id}')">remover</button>`;
     el.appendChild(card);
   });
 }
 
+async function editPhone(id, currentPhone){
+  const phone = prompt('Número de WhatsApp do aluno (com DDI e DDD, só números, ex: 5511999998888). Deixe em branco para remover:', currentPhone || '');
+  if(phone === null) return;
+  const res = await fetch('/api/admin/students/'+id+'/phone', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ phone })
+  });
+  renderStudents(await res.json());
+}
+
 async function addStudent(){
   const name = document.getElementById('studentName').value.trim();
   const email = document.getElementById('studentEmail').value.trim();
+  const phone = document.getElementById('studentPhone').value.trim();
   const status = document.getElementById('studentStatus');
   if(!name || !email){ status.textContent = 'Preencha nome e e-mail.'; return; }
   const res = await fetch('/api/admin/students', {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ name, email })
+    body: JSON.stringify({ name, email, phone })
   });
   const data = await res.json();
   if(!res.ok){ status.textContent = data.error || 'Erro ao convidar aluno.'; return; }
   renderStudents(data);
   document.getElementById('studentName').value = '';
   document.getElementById('studentEmail').value = '';
+  document.getElementById('studentPhone').value = '';
   status.textContent = `Convite criado para ${name} — avise para acessar e fazer "Primeiro acesso" com esse e-mail ✓`;
 }
 
