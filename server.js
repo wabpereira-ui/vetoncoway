@@ -69,6 +69,33 @@ async function initDb() {
       created_at TIMESTAMPTZ DEFAULT now()
     );
   `);
+  // Triagem Oncoway: ficha catalográfica estruturada por artigo (tipo de neoplasia, tópicos,
+  // palavras-chave, resumo) — gerada uma vez por artigo, usada para melhorar a busca.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS doc_metadata (
+      doc_id TEXT PRIMARY KEY REFERENCES docs(id) ON DELETE CASCADE,
+      tipo_neoplasia JSONB,
+      topicos JSONB,
+      palavras_chave JSONB,
+      resumo TEXT,
+      tipo_documento TEXT,
+      catalogued_at TIMESTAMPTZ DEFAULT now()
+    );
+  `);
+  // Triagem Oncoway: doses/protocolos extraídos dos artigos, isolados numa tabela própria
+  // para a mentora revisar (e para permitir, no futuro, detectar divergências entre fontes).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS doc_doses (
+      id TEXT PRIMARY KEY,
+      doc_id TEXT REFERENCES docs(id) ON DELETE CASCADE,
+      fonte_nome TEXT,
+      medicamento TEXT,
+      dose TEXT,
+      indicacao TEXT,
+      especie TEXT,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
+  `);
   // Semeia o acervo de exemplo na primeira vez, se a tabela estiver vazia e existir um docs.json local.
   const { rows } = await pool.query('SELECT COUNT(*)::int AS count FROM docs');
   if (rows[0].count === 0 && fs.existsSync(DOCS_PATH)) {
@@ -89,14 +116,15 @@ async function loadDocs() {
   return JSON.parse(fs.readFileSync(DOCS_PATH, 'utf8'));
 }
 async function addDoc(name, text) {
-  const id = 'doc-' + Date.now();
+  const id = 'doc-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex');
   if (useDb) {
     await pool.query('INSERT INTO docs (id, name, text) VALUES ($1,$2,$3)', [id, name, text]);
-    return;
+    return id;
   }
   const docs = JSON.parse(fs.readFileSync(DOCS_PATH, 'utf8'));
   docs.push({ id, name, text });
   fs.writeFileSync(DOCS_PATH, JSON.stringify(docs, null, 2));
+  return id;
 }
 async function deleteDoc(id) {
   if (useDb) {
@@ -332,19 +360,146 @@ function chunkText(text) {
 function normalize(s) {
   return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
-function retrieveContext(query, docs, topN = 5) {
+async function loadMetadataMap() {
+  if (!useDb) return {};
+  const { rows } = await pool.query('SELECT * FROM doc_metadata');
+  const map = {};
+  rows.forEach(r => {
+    map[r.doc_id] = {
+      tipo_neoplasia: r.tipo_neoplasia || [],
+      topicos: r.topicos || [],
+      palavras_chave: r.palavras_chave || [],
+      resumo: r.resumo || '',
+      tipo_documento: r.tipo_documento || ''
+    };
+  });
+  return map;
+}
+
+async function retrieveContext(query, docs, topN = 5) {
   const qWords = normalize(query).split(/\W+/).filter(w => w.length > 3);
+  const metaMap = await loadMetadataMap();
   let scored = [];
   docs.forEach(d => {
+    // Ficha catalográfica (Triagem Oncoway): se existir, dá um "bônus" de relevância quando
+    // a pergunta bate com o tipo de neoplasia, tópicos ou palavras-chave catalogadas —
+    // isso ajuda a achar o artigo certo mesmo quando o aluno usa palavras diferentes do texto.
+    const meta = metaMap[d.id];
+    let metaBoost = 0;
+    if (meta) {
+      const tags = [...(meta.tipo_neoplasia || []), ...(meta.topicos || []), ...(meta.palavras_chave || [])]
+        .map(t => normalize(String(t)));
+      qWords.forEach(w => {
+        if (tags.some(tag => tag.includes(w) || w.includes(tag))) metaBoost += 4;
+      });
+    }
     chunkText(d.text).forEach(c => {
       const cNorm = normalize(c);
-      let score = 0;
+      let score = metaBoost;
       qWords.forEach(w => { if (cNorm.includes(w)) score++; });
       if (score > 0) scored.push({ source: d.name, text: c, score });
     });
   });
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, topN);
+}
+
+// ---------- Triagem Oncoway: agente de catalogação do acervo ----------
+// Roda uma vez por artigo (não a cada pergunta do aluno): lê o texto e extrai uma ficha
+// estruturada (tipo de neoplasia, tópicos, palavras-chave, resumo) + as doses/protocolos
+// mencionados, numa tabela própria para a mentora revisar.
+const CATALOG_SYSTEM_PROMPT = `Você é um agente de catalogação de acervo médico-veterinário ("Triagem Oncoway").
+Leia o material abaixo e extraia metadados estruturados para melhorar buscas futuras.
+Responda SOMENTE com um objeto JSON válido, sem nenhum texto antes ou depois, EXATAMENTE neste formato:
+{
+  "tipo_neoplasia": ["..."],
+  "topicos": ["..."],
+  "palavras_chave": ["..."],
+  "resumo": "...",
+  "tipo_documento": "...",
+  "doses": [ { "medicamento": "...", "dose": "...", "indicacao": "...", "especie": "..." } ]
+}
+Regras:
+- tipo_neoplasia: tipos de câncer/tumor abordados (lista vazia se o material não for específico de um tipo).
+- topicos: 3 a 8 tópicos clínicos abordados (ex: "estadiamento", "quimioterapia adjuvante", "fatores prognósticos").
+- palavras_chave: 5 a 15 termos e sinônimos que um aluno poderia usar para buscar esse conteúdo, incluindo termos leigos e técnicos.
+- resumo: 1-2 frases resumindo o conteúdo do material.
+- tipo_documento: ex: "artigo científico", "transcrição de aula", "capítulo de livro", "protocolo clínico".
+- doses: toda dose de medicamento mencionada no texto, com a indicação clínica associada. Lista vazia se não houver nenhuma.
+- Nunca invente informação que não está no texto. Se um campo não puder ser preenchido com confiança, use lista/string vazia.`;
+
+async function catalogDocument(doc) {
+  const userContent = `NOME DA FONTE: ${doc.name}\n\nTEXTO (pode estar truncado):\n${doc.text.slice(0, 15000)}`;
+  const raw = await callClaude({
+    system: CATALOG_SYSTEM_PROMPT,
+    messages: [{ role: 'user', content: userContent }],
+    maxTokens: 1200
+  });
+  if (!raw) return null;
+  try {
+    const cleaned = raw.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
+    return JSON.parse(cleaned);
+  } catch (e) {
+    console.error('Triagem Oncoway: erro ao interpretar JSON da catalogação:', e.message);
+    return null;
+  }
+}
+
+async function saveMetadata(docId, docName, meta) {
+  if (!useDb) return;
+  await pool.query(`
+    INSERT INTO doc_metadata (doc_id, tipo_neoplasia, topicos, palavras_chave, resumo, tipo_documento)
+    VALUES ($1,$2,$3,$4,$5,$6)
+    ON CONFLICT (doc_id) DO UPDATE SET
+      tipo_neoplasia=$2, topicos=$3, palavras_chave=$4, resumo=$5, tipo_documento=$6, catalogued_at=now()
+  `, [
+    docId,
+    JSON.stringify(meta.tipo_neoplasia || []),
+    JSON.stringify(meta.topicos || []),
+    JSON.stringify(meta.palavras_chave || []),
+    meta.resumo || '',
+    meta.tipo_documento || ''
+  ]);
+
+  await pool.query('DELETE FROM doc_doses WHERE doc_id=$1', [docId]);
+  if (Array.isArray(meta.doses)) {
+    for (const d of meta.doses) {
+      if (!d.medicamento && !d.dose) continue;
+      await pool.query(
+        'INSERT INTO doc_doses (id, doc_id, fonte_nome, medicamento, dose, indicacao, especie) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+        ['dose-' + crypto.randomBytes(6).toString('hex'), docId, docName, d.medicamento || '', d.dose || '', d.indicacao || '', d.especie || '']
+      );
+    }
+  }
+}
+
+async function getCatalogStatus() {
+  if (!useDb) return { total: 0, catalogued: 0, dbEnabled: false };
+  const totalRes = await pool.query('SELECT COUNT(*)::int AS c FROM docs');
+  const cataloguedRes = await pool.query('SELECT COUNT(*)::int AS c FROM doc_metadata');
+  return { total: totalRes.rows[0].c, catalogued: cataloguedRes.rows[0].c, dbEnabled: true };
+}
+
+async function getUncataloguedDocs(limit) {
+  if (!useDb) return [];
+  const { rows } = await pool.query(`
+    SELECT d.id, d.name, d.text FROM docs d
+    LEFT JOIN doc_metadata m ON m.doc_id = d.id
+    WHERE m.doc_id IS NULL
+    ORDER BY d.created_at ASC
+    LIMIT $1
+  `, [limit]);
+  return rows;
+}
+
+async function loadDoses() {
+  if (!useDb) return [];
+  const { rows } = await pool.query('SELECT * FROM doc_doses ORDER BY created_at DESC');
+  return rows;
+}
+async function deleteDoseEntry(id) {
+  if (!useDb) return;
+  await pool.query('DELETE FROM doc_doses WHERE id=$1', [id]);
 }
 
 const SEM_COBERTURA = 'SEM_COBERTURA_NO_ACERVO';
@@ -478,7 +633,7 @@ app.post('/api/ask', requireStudentApi, async (req, res) => {
     const safeExamTexts = Array.isArray(examTexts) ? examTexts.slice(0, 5) : [];
 
     const docs = await loadDocs();
-    const topChunks = retrieveContext(question || 'interpretação de exame', docs);
+    const topChunks = await retrieveContext(question || 'interpretação de exame', docs);
     const contextBlock = topChunks.map(c => `[Fonte: ${c.source}]\n${c.text}`).join('\n\n---\n\n');
     const sources = [...new Set(topChunks.map(c => c.source))];
 
@@ -506,12 +661,52 @@ app.get('/api/admin/docs', requireAdmin, async (req, res) => {
 app.post('/api/admin/docs', requireAdmin, async (req, res) => {
   const { name, text } = req.body;
   if (!name || !text) return res.status(400).json({ error: 'name e text são obrigatórios' });
-  await addDoc(name, text);
+  const docId = await addDoc(name, text);
   res.json(await loadDocs());
+
+  // Triagem Oncoway: cataloga em segundo plano, sem fazer o upload esperar.
+  if (useDb) {
+    catalogDocument({ name, text })
+      .then(meta => { if (meta) return saveMetadata(docId, name, meta); })
+      .catch(err => console.error('Triagem Oncoway: erro ao catalogar', name, err));
+  }
 });
 app.delete('/api/admin/docs/:id', requireAdmin, async (req, res) => {
   await deleteDoc(req.params.id);
   res.json(await loadDocs());
+});
+
+// ---------- Triagem Oncoway (agente de catalogação do acervo) ----------
+
+app.get('/api/admin/catalog-status', requireAdmin, async (req, res) => {
+  res.json(await getCatalogStatus());
+});
+
+// Processa um lote de artigos ainda não catalogados (a mentora pode clicar de novo até
+// zerar a fila — cada clique processa até 8 artigos, para não travar em acervos grandes).
+app.post('/api/admin/catalog-batch', requireAdmin, async (req, res) => {
+  if (!useDb) return res.status(400).json({ error: 'A catalogação exige banco de dados configurado (DATABASE_URL).' });
+  const BATCH_SIZE = 8;
+  const pending = await getUncataloguedDocs(BATCH_SIZE);
+  let processed = 0;
+  for (const doc of pending) {
+    try {
+      const meta = await catalogDocument(doc);
+      if (meta) { await saveMetadata(doc.id, doc.name, meta); processed++; }
+    } catch (err) {
+      console.error('Triagem Oncoway: erro ao catalogar', doc.name, err);
+    }
+  }
+  const status = await getCatalogStatus();
+  res.json({ processed, ...status });
+});
+
+app.get('/api/admin/doses', requireAdmin, async (req, res) => {
+  res.json(await loadDoses());
+});
+app.delete('/api/admin/doses/:id', requireAdmin, async (req, res) => {
+  await deleteDoseEntry(req.params.id);
+  res.json(await loadDoses());
 });
 
 // ---------- Área da mentora: convites e contas dos alunos ----------
@@ -576,7 +771,7 @@ app.post('/webhook', async (req, res) => {
     const message = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
     if (!message || message.type !== 'text') return;
     const docs = await loadDocs();
-    const topChunks = retrieveContext(message.text.body, docs);
+    const topChunks = await retrieveContext(message.text.body, docs);
     const contextBlock = topChunks.map(c => `[Fonte: ${c.source}]\n${c.text}`).join('\n\n---\n\n');
     if (!whatsappSessions.has(message.from)) whatsappSessions.set(message.from, { history: [] });
     const waSession = whatsappSessions.get(message.from);
