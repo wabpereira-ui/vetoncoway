@@ -54,6 +54,21 @@
     <h2>Materiais no acervo</h2>
     <div id="docList"></div>
 
+    <h2>Triagem Oncoway <span style="font-weight:400; font-size:11px; color:var(--ink-soft); text-transform:none; letter-spacing:0;">— agente de catalogação do acervo</span></h2>
+    <div class="panel">
+      <div style="font-size:12px; color:var(--ink-soft); margin-bottom:12px;">
+        Lê cada artigo uma vez e extrai uma ficha (tipo de neoplasia, tópicos, palavras-chave) para melhorar a busca,
+        além de separar as doses/protocolos mencionados numa lista própria para você revisar.
+      </div>
+      <div id="catalogStatus" class="status" style="margin-bottom:10px;">Carregando status...</div>
+      <button class="btn" id="catalogBtn" onclick="runCatalogBatch()">Catalogar pendentes</button>
+    </div>
+
+    <details style="margin-top:10px;">
+      <summary style="cursor:pointer; font-family:'IBM Plex Mono',monospace; font-size:12px; letter-spacing:.5px; text-transform:uppercase; color:var(--sage-dark);">+ Ver doses/protocolos extraídos pelo Triagem Oncoway</summary>
+      <div style="margin-top:10px;" id="doseList"></div>
+    </details>
+
     <h2>Alunos</h2>
     <div class="panel">
       <div style="font-size:12px; color:var(--ink-soft); margin-bottom:12px;">Cadastre o nome e e-mail do aluno — ele mesmo cria a senha na tela de "Primeiro acesso".</div>
@@ -120,6 +135,7 @@ async function addDocument(){
   renderDocs(await res.json());
   document.getElementById('docTitle').value = '';
   document.getElementById('docText').value = '';
+  loadCatalogStatus();
 }
 
 async function handleFileUpload(event){
@@ -157,9 +173,83 @@ async function handleFileUpload(event){
     }
   }
   event.target.value = '';
+  loadCatalogStatus();
 }
 
 loadDocs();
+
+async function loadCatalogStatus(){
+  const res = await fetch('/api/admin/catalog-status');
+  const status = await res.json();
+  renderCatalogStatus(status);
+  return status;
+}
+
+function renderCatalogStatus(status){
+  const el = document.getElementById('catalogStatus');
+  if(!status.dbEnabled){
+    el.textContent = 'A catalogação exige banco de dados configurado (DATABASE_URL). Sem isso, essa função fica desativada.';
+    document.getElementById('catalogBtn').disabled = true;
+    return;
+  }
+  const pendentes = status.total - status.catalogued;
+  el.textContent = `${status.catalogued} de ${status.total} artigo(s) catalogado(s)` + (pendentes > 0 ? ` — ${pendentes} pendente(s).` : ' — tudo em dia ✓');
+}
+
+async function runCatalogBatch(){
+  const btn = document.getElementById('catalogBtn');
+  const statusEl = document.getElementById('catalogStatus');
+  btn.disabled = true;
+  let keepGoing = true;
+  let rounds = 0;
+  while(keepGoing && rounds < 100){
+    rounds++;
+    statusEl.textContent = `Catalogando... (lote ${rounds})`;
+    try{
+      const res = await fetch('/api/admin/catalog-batch', { method:'POST' });
+      const data = await res.json();
+      if(!res.ok){ statusEl.textContent = data.error || 'Erro ao catalogar.'; keepGoing = false; break; }
+      renderCatalogStatus(data);
+      if(data.processed === 0 || data.catalogued >= data.total) keepGoing = false;
+    }catch(e){
+      statusEl.textContent = 'Erro de conexão ao catalogar. Tente novamente.';
+      keepGoing = false;
+    }
+  }
+  btn.disabled = false;
+  loadDoses();
+}
+
+async function loadDoses(){
+  const res = await fetch('/api/admin/doses');
+  const doses = await res.json();
+  const el = document.getElementById('doseList');
+  if(!doses.length){ el.innerHTML = '<div class="status">Nenhuma dose extraída ainda (catalogue o acervo primeiro).</div>'; return; }
+  el.innerHTML = doses.map(d => `
+    <div class="doc-card">
+      <div class="doc-name">${escapeHtml(d.medicamento || '(sem nome)')} — ${escapeHtml(d.dose || '')}</div>
+      <div class="doc-meta">${escapeHtml(d.indicacao || '')} ${d.especie ? '· ' + escapeHtml(d.especie) : ''} · fonte: ${escapeHtml(d.fonte_nome || '')}</div>
+      <button onclick="removeDose('${d.id}')">remover</button>
+    </div>
+  `).join('');
+}
+
+async function removeDose(id){
+  const res = await fetch('/api/admin/doses/'+id, { method:'DELETE' });
+  const doses = await res.json();
+  const el = document.getElementById('doseList');
+  if(!doses.length){ el.innerHTML = '<div class="status">Nenhuma dose extraída ainda.</div>'; return; }
+  el.innerHTML = doses.map(d => `
+    <div class="doc-card">
+      <div class="doc-name">${escapeHtml(d.medicamento || '(sem nome)')} — ${escapeHtml(d.dose || '')}</div>
+      <div class="doc-meta">${escapeHtml(d.indicacao || '')} ${d.especie ? '· ' + escapeHtml(d.especie) : ''} · fonte: ${escapeHtml(d.fonte_nome || '')}</div>
+      <button onclick="removeDose('${d.id}')">remover</button>
+    </div>
+  `).join('');
+}
+
+loadCatalogStatus();
+loadDoses();
 
 async function addStudentsBulk(){
   const raw = document.getElementById('bulkStudents').value;
