@@ -72,6 +72,9 @@ async function initDb() {
   // Telefone de WhatsApp (opcional) — usado para restringir o bot só a alunos matriculados.
   // ALTER com IF NOT EXISTS garante que funciona tanto em bancos novos quanto já existentes.
   await pool.query(`ALTER TABLE students ADD COLUMN IF NOT EXISTS phone TEXT;`);
+  // Rastreamento de acesso (aditivo — não afeta login/senha existentes de ninguém).
+  await pool.query(`ALTER TABLE students ADD COLUMN IF NOT EXISTS last_login TIMESTAMPTZ;`);
+  await pool.query(`ALTER TABLE students ADD COLUMN IF NOT EXISTS login_count INT DEFAULT 0;`);
   // Conversas salvas dos alunos (para reabrir depois, como no histórico do Claude).
   await pool.query(`
     CREATE TABLE IF NOT EXISTS conversations (
@@ -91,6 +94,10 @@ async function initDb() {
       created_at TIMESTAMPTZ DEFAULT now()
     );
   `);
+  // Para o painel de atividade: de onde veio a resposta (acervo/geral) e quais materiais
+  // foram usados — permite montar o ranking de "assuntos mais procurados".
+  await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS tier TEXT;`);
+  await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS source_doc_ids JSONB;`);
   // Triagem Oncoway: ficha catalográfica estruturada por artigo (tipo de neoplasia, tópicos,
   // palavras-chave, resumo) — gerada uma vez por artigo, usada para melhorar a busca.
   await pool.query(`
@@ -327,11 +334,18 @@ async function loadConversationMessages(conversationId) {
   );
   return rows;
 }
-async function appendMessage(conversationId, role, content) {
+async function appendMessage(conversationId, role, content, { tier, sourceDocIds } = {}) {
   if (!useDb) return;
   const id = 'msg-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex');
-  await pool.query('INSERT INTO messages (id, conversation_id, role, content) VALUES ($1,$2,$3,$4)', [id, conversationId, role, content]);
+  await pool.query(
+    'INSERT INTO messages (id, conversation_id, role, content, tier, source_doc_ids) VALUES ($1,$2,$3,$4,$5,$6)',
+    [id, conversationId, role, content, tier || null, sourceDocIds && sourceDocIds.length ? JSON.stringify(sourceDocIds) : null]
+  );
   await pool.query('UPDATE conversations SET updated_at = now() WHERE id=$1', [conversationId]);
+}
+async function recordLogin(studentId) {
+  if (!useDb) return;
+  await pool.query('UPDATE students SET last_login = now(), login_count = COALESCE(login_count,0) + 1 WHERE id=$1', [studentId]);
 }
 async function maybeSetConversationTitle(conversationId, question) {
   if (!useDb || !question) return;
@@ -421,6 +435,7 @@ app.post('/api/login', async (req, res) => {
   const student = await verifyStudent(email, password);
   if (!student) return res.status(401).json({ error: 'E-mail ou senha inválidos.' });
   createSession(student, res, req);
+  await recordLogin(student.id);
   res.json({ ok: true, name: student.name });
 });
 
@@ -431,6 +446,7 @@ app.post('/api/register', async (req, res) => {
   try {
     const student = await setStudentPassword(email, password);
     createSession(student, res, req);
+    await recordLogin(student.id);
     res.json({ ok: true, name: student.name });
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -504,7 +520,7 @@ async function retrieveContext(query, docs, topN = 5) {
       const cNorm = normalize(c);
       let score = metaBoost;
       qWords.forEach(w => { if (cNorm.includes(w)) score++; });
-      if (score > 0) scored.push({ source: d.name, text: c, score });
+      if (score > 0) scored.push({ source: d.name, docId: d.id, text: c, score });
     });
   });
   scored.sort((a, b) => b.score - a.score);
@@ -605,6 +621,75 @@ async function loadDoses() {
   const { rows } = await pool.query('SELECT * FROM doc_doses ORDER BY created_at DESC');
   return rows;
 }
+
+// ---------- Painel de atividade (acompanhamento de acesso e uso) ----------
+async function getAnalytics() {
+  if (!useDb) return { dbEnabled: false };
+
+  const [studentsRes, tierRes, materialsRes, topicsRes, dailyRes] = await Promise.all([
+    pool.query(`
+      SELECT s.id, s.name, s.email, s.last_login, s.login_count,
+        COALESCE(mc.msg_count, 0)::int AS msg_count,
+        mc.last_active
+      FROM students s
+      LEFT JOIN (
+        SELECT c.student_id,
+          COUNT(*) FILTER (WHERE m.role = 'user') AS msg_count,
+          MAX(m.created_at) AS last_active
+        FROM messages m
+        JOIN conversations c ON m.conversation_id = c.id
+        GROUP BY c.student_id
+      ) mc ON mc.student_id = s.id
+      ORDER BY mc.last_active DESC NULLS LAST, s.created_at DESC
+    `),
+    pool.query(`SELECT tier, COUNT(*)::int AS count FROM messages WHERE role='assistant' AND tier IS NOT NULL GROUP BY tier`),
+    pool.query(`
+      SELECT d.name AS name, COUNT(*)::int AS count
+      FROM messages m
+      CROSS JOIN LATERAL jsonb_array_elements_text(m.source_doc_ids) AS doc_id
+      JOIN docs d ON d.id = doc_id
+      WHERE m.role = 'assistant' AND m.source_doc_ids IS NOT NULL
+      GROUP BY d.name
+      ORDER BY count DESC
+      LIMIT 10
+    `),
+    pool.query(`
+      SELECT topic, COUNT(*)::int AS count FROM (
+        SELECT jsonb_array_elements_text(dm.topicos) AS topic
+        FROM messages m
+        CROSS JOIN LATERAL jsonb_array_elements_text(m.source_doc_ids) AS doc_id
+        JOIN doc_metadata dm ON dm.doc_id = doc_id
+        WHERE m.role = 'assistant' AND m.source_doc_ids IS NOT NULL
+        UNION ALL
+        SELECT jsonb_array_elements_text(dm.tipo_neoplasia) AS topic
+        FROM messages m
+        CROSS JOIN LATERAL jsonb_array_elements_text(m.source_doc_ids) AS doc_id
+        JOIN doc_metadata dm ON dm.doc_id = doc_id
+        WHERE m.role = 'assistant' AND m.source_doc_ids IS NOT NULL
+      ) sub
+      GROUP BY topic
+      ORDER BY count DESC
+      LIMIT 12
+    `),
+    pool.query(`
+      SELECT to_char(date_trunc('day', created_at), 'DD/MM') AS day, COUNT(*)::int AS count
+      FROM messages
+      WHERE role = 'user' AND created_at > now() - interval '14 days'
+      GROUP BY date_trunc('day', created_at)
+      ORDER BY date_trunc('day', created_at)
+    `)
+  ]);
+
+  return {
+    dbEnabled: true,
+    students: studentsRes.rows,
+    tierDistribution: tierRes.rows,
+    topMaterials: materialsRes.rows,
+    topTopics: topicsRes.rows,
+    dailyActivity: dailyRes.rows
+  };
+}
+
 async function deleteDoseEntry(id) {
   if (!useDb) return;
   await pool.query('DELETE FROM doc_doses WHERE id=$1', [id]);
@@ -753,6 +838,7 @@ app.post('/api/ask', requireStudentApi, async (req, res) => {
     const topChunks = await retrieveContext(finalQuestion, docs);
     const contextBlock = topChunks.map(c => `[Fonte: ${c.source}]\n${c.text}`).join('\n\n---\n\n');
     const sources = [...new Set(topChunks.map(c => c.source))];
+    const sourceDocIds = [...new Set(topChunks.map(c => c.docId))];
 
     let result;
     if (useDb && conversationId) {
@@ -765,7 +851,10 @@ app.post('/api/ask', requireStudentApi, async (req, res) => {
       result = await askClaudeCore(history, finalQuestion, contextBlock, { images: safeImages, examTexts: safeExamTexts });
       const historyQuestion = question || (safeImages.length || safeExamTexts.length ? '[anexo(s) de exame enviado(s)]' : question);
       await appendMessage(conversationId, 'user', historyQuestion);
-      await appendMessage(conversationId, 'assistant', result.answer);
+      await appendMessage(conversationId, 'assistant', result.answer, {
+        tier: result.tier,
+        sourceDocIds: result.tier === 'acervo' ? sourceDocIds : []
+      });
       await maybeSetConversationTitle(conversationId, question);
     } else {
       // Retaguarda sem banco (ou sem conversationId): memória de sessão simples, como antes.
@@ -853,6 +942,10 @@ app.post('/api/admin/catalog-batch', requireAdmin, async (req, res) => {
   }
   const status = await getCatalogStatus();
   res.json({ processed, ...status });
+});
+
+app.get('/api/admin/analytics', requireAdmin, async (req, res) => {
+  res.json(await getAnalytics());
 });
 
 app.get('/api/admin/doses', requireAdmin, async (req, res) => {
