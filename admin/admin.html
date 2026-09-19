@@ -6,6 +6,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
 <style>
   :root{
     --paper:#F1F3EE; --card:#FFFFFF; --ink:#1E2A32; --ink-soft:#4B5A61;
@@ -56,6 +57,7 @@
       <button class="tab active" id="tabBtn-acervo" onclick="showPage('acervo')">📚 Acervo</button>
       <button class="tab" id="tabBtn-triagem" onclick="showPage('triagem')">🔎 Triagem Oncoway</button>
       <button class="tab" id="tabBtn-alunos" onclick="showPage('alunos')">🎓 Alunos</button>
+      <button class="tab" id="tabBtn-atividade" onclick="showPage('atividade')">📊 Atividade</button>
     </div>
   </div>
 
@@ -120,6 +122,35 @@
       <div id="studentList"></div>
     </div>
 
+    <!-- ABA: ATIVIDADE -->
+    <div class="page" id="page-atividade">
+      <div id="analyticsDisabled" class="status" style="display:none;">A catalogação exige banco de dados configurado (DATABASE_URL) para funcionar.</div>
+
+      <div id="analyticsContent">
+        <h2>Uso nos últimos 14 dias</h2>
+        <div class="panel"><canvas id="chartDaily" height="90"></canvas></div>
+
+        <h2>Acervo vs. conhecimento geral/internet</h2>
+        <div class="panel" style="display:flex; align-items:center; gap:24px;">
+          <div style="width:180px; flex-shrink:0;"><canvas id="chartTier"></canvas></div>
+          <div style="font-size:12px; color:var(--ink-soft);">
+            Mostra quantas respostas vieram do acervo oficial (validado pela mentora) versus quantas precisaram
+            de conhecimento geral/busca na internet — um sinal de onde o acervo ainda tem lacunas.
+          </div>
+        </div>
+
+        <h2>Assuntos mais procurados</h2>
+        <div class="panel"><canvas id="chartTopics" height="140"></canvas></div>
+
+        <h2>Materiais mais consultados</h2>
+        <div class="panel"><canvas id="chartMaterials" height="140"></canvas></div>
+
+        <h2>Atividade por aluno</h2>
+        <div id="studentActivityList"></div>
+      </div>
+    </div>
+
+
   </div>
 
 <script>
@@ -130,11 +161,12 @@ if(window['pdfjsLib']){
 function escapeHtml(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 function showPage(name){
-  ['acervo','triagem','alunos'].forEach(p=>{
+  ['acervo','triagem','alunos','atividade'].forEach(p=>{
     document.getElementById('page-'+p).classList.toggle('active', p===name);
     document.getElementById('tabBtn-'+p).classList.toggle('active', p===name);
   });
   try{ localStorage.setItem('oncoway_admin_tab', name); }catch(e){}
+  if(name === 'atividade') loadAnalytics();
 }
 
 async function loadDocs(){
@@ -385,6 +417,92 @@ async function removeStudent(id){
 }
 
 loadStudents();
+
+let charts = {};
+function destroyChart(key){ if(charts[key]){ charts[key].destroy(); delete charts[key]; } }
+
+const CHART_COLORS = ['#5C8374','#B8814A','#223449','#B33F2E','#8AA694','#D4A15C','#4B5A61','#7A9E8E','#C97B3D','#3F5C50','#94AFA3','#E0B989'];
+
+function timeAgoAnalytics(iso){
+  if(!iso) return 'nunca acessou';
+  const diff = Date.now() - new Date(iso).getTime();
+  const min = Math.floor(diff/60000);
+  if(min < 1) return 'agora mesmo';
+  if(min < 60) return `${min}min atrás`;
+  const h = Math.floor(min/60);
+  if(h < 24) return `${h}h atrás`;
+  const d = Math.floor(h/24);
+  if(d < 30) return `${d}d atrás`;
+  return new Date(iso).toLocaleDateString('pt-BR');
+}
+
+async function loadAnalytics(){
+  const res = await fetch('/api/admin/analytics');
+  const data = await res.json();
+
+  if(!data.dbEnabled){
+    document.getElementById('analyticsDisabled').style.display = 'block';
+    document.getElementById('analyticsContent').style.display = 'none';
+    return;
+  }
+  document.getElementById('analyticsDisabled').style.display = 'none';
+  document.getElementById('analyticsContent').style.display = 'block';
+
+  // Uso diário (linha)
+  destroyChart('daily');
+  charts.daily = new Chart(document.getElementById('chartDaily'), {
+    type: 'line',
+    data: {
+      labels: data.dailyActivity.map(d=>d.day),
+      datasets: [{ label:'Perguntas dos alunos', data: data.dailyActivity.map(d=>d.count), borderColor:'#5C8374', backgroundColor:'rgba(92,131,116,0.15)', fill:true, tension:0.25 }]
+    },
+    options: { plugins:{ legend:{ display:false } }, scales:{ y:{ beginAtZero:true, ticks:{ precision:0 } } } }
+  });
+
+  // Acervo vs geral (donut)
+  destroyChart('tier');
+  const tierMap = Object.fromEntries(data.tierDistribution.map(t=>[t.tier, t.count]));
+  charts.tier = new Chart(document.getElementById('chartTier'), {
+    type: 'doughnut',
+    data: {
+      labels: ['Acervo oficial', 'Geral / Internet'],
+      datasets: [{ data: [tierMap.acervo||0, tierMap.fallback||0], backgroundColor: ['#5C8374','#B8814A'] }]
+    },
+    options: { plugins:{ legend:{ position:'bottom', labels:{ boxWidth:12, font:{ size:11 } } } } }
+  });
+
+  // Assuntos mais procurados (barra horizontal)
+  destroyChart('topics');
+  charts.topics = new Chart(document.getElementById('chartTopics'), {
+    type: 'bar',
+    data: {
+      labels: data.topTopics.map(t=>t.topic),
+      datasets: [{ data: data.topTopics.map(t=>t.count), backgroundColor: CHART_COLORS }]
+    },
+    options: { indexAxis:'y', plugins:{ legend:{ display:false } }, scales:{ x:{ beginAtZero:true, ticks:{ precision:0 } } } }
+  });
+
+  // Materiais mais consultados (barra horizontal)
+  destroyChart('materials');
+  charts.materials = new Chart(document.getElementById('chartMaterials'), {
+    type: 'bar',
+    data: {
+      labels: data.topMaterials.map(m=>m.name),
+      datasets: [{ data: data.topMaterials.map(m=>m.count), backgroundColor: CHART_COLORS }]
+    },
+    options: { indexAxis:'y', plugins:{ legend:{ display:false } }, scales:{ x:{ beginAtZero:true, ticks:{ precision:0 } } } }
+  });
+
+  // Tabela de atividade por aluno
+  const el = document.getElementById('studentActivityList');
+  if(!data.students.length){ el.innerHTML = '<div class="status">Nenhum aluno cadastrado ainda.</div>'; return; }
+  el.innerHTML = data.students.map(s => `
+    <div class="doc-card">
+      <div class="doc-name">${escapeHtml(s.name)}</div>
+      <div class="doc-meta">${escapeHtml(s.email)} · ${s.msg_count} pergunta(s) · ${s.login_count||0} login(s) · último acesso: ${timeAgoAnalytics(s.last_active || s.last_login)}</div>
+    </div>
+  `).join('');
+}
 
 // Lembra a última aba usada
 try{
