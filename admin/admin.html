@@ -6,7 +6,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.0/chart.umd.min.js"></script>
 <style>
   :root{
     --paper:#F1F3EE; --card:#FFFFFF; --ink:#1E2A32; --ink-soft:#4B5A61;
@@ -447,6 +447,11 @@ async function loadAnalytics(){
   }
   document.getElementById('analyticsDisabled').style.display = 'none';
   document.getElementById('analyticsContent').style.display = 'block';
+
+  if(typeof Chart === 'undefined'){
+    document.getElementById('analyticsContent').innerHTML = '<div class="status">Não foi possível carregar a biblioteca de gráficos (verifique sua conexão e recarregue a página).</div>';
+    return;
+  }
 
   // Uso diário (linha)
   destroyChart('daily');
