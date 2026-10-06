@@ -160,7 +160,7 @@
 
     <div class="composer">
       <button class="icon-btn" id="attachBtn" onclick="document.getElementById('fileInput').click()" title="Anexar fotos ou PDFs de exame (até 5)">📎</button>
-      <input id="fileInput" type="file" accept="image/*,.pdf" multiple style="display:none;" onchange="handleFileSelect(event.target.files); event.target.value='';">
+      <input id="fileInput" type="file" accept="image/*,.pdf" multiple style="display:none;" onchange="onFileInputChange(event)">
       <button class="icon-btn" id="micBtn" onclick="toggleDictation()" title="Falar a pergunta" style="display:none;">🎤</button>
       <textarea id="input" placeholder="Digite a dúvida, descreva o caso, arraste ou cole um exame..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage();}"></textarea>
       <button class="btn" id="sendBtn" onclick="sendMessage()">Enviar</button>
@@ -173,10 +173,17 @@
 if(window['pdfjsLib']){
   pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 }
-marked.setOptions({ breaks: true });
+// Se a biblioteca de formatação (marked) for bloqueada no navegador de alguém (extensão de
+// anúncios, rede corporativa...), o app continua funcionando — só mostra o texto sem formatação.
+if(window['marked']){ marked.setOptions({ breaks: true }); }
+function renderMarkdown(text){
+  if(window['marked']) return marked.parse(text);
+  return escapeHtml(text).replace(/\n/g, '<br>');
+}
 
 const MAX_ATTACHMENTS = 5;
 let pendingAttachments = [];
+let processingFiles = 0; // arquivos sendo lidos/convertidos agora (para mostrar "Lendo...")
 let currentConversationId = null; // null = conversa nova ainda não criada no banco
 
 function toggleSidebar(){ document.getElementById('sidebar').classList.toggle('open'); }
@@ -261,7 +268,7 @@ async function openConversation(id){
   const messagesEl = document.getElementById('messages');
   messagesEl.innerHTML = '';
   msgs.forEach(m => {
-    const html = m.role === 'assistant' ? marked.parse(m.content) : escapeHtml(m.content);
+    const html = m.role === 'assistant' ? renderMarkdown(m.content) : escapeHtml(m.content);
     addMessageToDOM(m.role, html);
   });
   loadConversationList();
@@ -277,56 +284,112 @@ async function deleteConversationConfirm(id){
 
 function renderAttachments(){
   const row = document.getElementById('attachmentsRow');
-  if(!pendingAttachments.length){ row.style.display = 'none'; row.innerHTML = ''; return; }
+  // Atualiza o botão 📎 antes de qualquer "return", para ele nunca ficar desativado por engano.
+  document.getElementById('attachBtn').disabled = pendingAttachments.length >= MAX_ATTACHMENTS;
+  if(!pendingAttachments.length && !processingFiles){ row.style.display = 'none'; row.innerHTML = ''; return; }
   row.style.display = 'flex';
-  row.innerHTML = pendingAttachments.map((att, i) => {
+  let html = pendingAttachments.map((att, i) => {
     const thumb = att.kind === 'image' ? `<img src="data:${att.mediaType};base64,${att.data}">` : '📄';
     return `<div class="attachment-chip">${thumb}<span>${escapeHtml(att.label)}</span><button onclick="removeAttachment(${i})">✕</button></div>`;
   }).join('');
-  document.getElementById('attachBtn').disabled = pendingAttachments.length >= MAX_ATTACHMENTS;
+  if(processingFiles){
+    html += `<div class="attachment-chip"><span>⏳ Lendo ${processingFiles} arquivo(s)...</span></div>`;
+  }
+  row.innerHTML = html;
 }
 function removeAttachment(i){ pendingAttachments.splice(i, 1); renderAttachments(); }
 function clearAttachments(){ pendingAttachments = []; renderAttachments(); }
 
-async function fileToAttachment(file){
-  if(pendingAttachments.length >= MAX_ATTACHMENTS){ alert(`Limite de ${MAX_ATTACHMENTS} anexos por pergunta.`); return; }
-  if(file.type.startsWith('image/')){
-    const dataUrl = await new Promise(resolve=>{
-      const reader = new FileReader();
-      reader.onload = ()=>resolve(reader.result);
-      reader.readAsDataURL(file);
+// Converte qualquer imagem em JPEG reduzido (até 2000px). Resolve dois problemas comuns em
+// celulares: fotos grandes demais (a IA recusa imagens acima de ~5 MB) e formatos que a IA não
+// aceita (ex: HEIC do iPhone, quando o navegador consegue abri-lo).
+async function imageFileToJpegBase64(file, maxDim = 2000, quality = 0.9){
+  const url = URL.createObjectURL(file);
+  try{
+    const img = await new Promise((resolve, reject)=>{
+      const im = new Image();
+      im.onload = ()=>resolve(im);
+      im.onerror = ()=>reject(new Error('este navegador não consegue abrir esse formato de imagem. Tente uma foto em JPG ou PNG (ou tire um print do exame).'));
+      im.src = url;
     });
-    const base64 = dataUrl.split(',')[1];
-    pendingAttachments.push({ kind:'image', mediaType:file.type, data:base64, label:file.name || 'imagem colada' });
+    const scale = Math.min(1, maxDim / Math.max(img.naturalWidth, img.naturalHeight));
+    const w = Math.max(1, Math.round(img.naturalWidth * scale));
+    const h = Math.max(1, Math.round(img.naturalHeight * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff'; // fundo branco (PNG com transparência viraria preto no JPEG)
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(img, 0, 0, w, h);
+    return canvas.toDataURL('image/jpeg', quality).split(',')[1];
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+// Lê um arquivo e coloca na lista de anexos. Em caso de problema, LANÇA um erro com uma
+// explicação em português — quem chama (handleFileSelect) mostra na tela, nunca em silêncio.
+async function fileToAttachment(file){
+  if(pendingAttachments.length >= MAX_ATTACHMENTS){ throw new Error(`limite de ${MAX_ATTACHMENTS} anexos por pergunta.`); }
+  const name = file.name || 'arquivo';
+  const isPdf = file.type === 'application/pdf' || name.toLowerCase().endsWith('.pdf');
+  // Alguns celulares Android informam o tipo do arquivo em branco — por isso olhamos a extensão também.
+  const isImage = (file.type || '').startsWith('image/') || /\.(jpe?g|png|webp|gif|heic|heif)$/i.test(name);
+
+  if(isImage && !isPdf){
+    const base64 = await imageFileToJpegBase64(file);
+    pendingAttachments.push({ kind:'image', mediaType:'image/jpeg', data:base64, label:file.name || 'imagem colada' });
     renderAttachments();
-  } else if(file.type === 'application/pdf' || file.name?.toLowerCase().endsWith('.pdf')){
-    try{
-      const buf = await file.arrayBuffer();
-      const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-      let pages = [];
-      for(let i=1;i<=pdf.numPages;i++){
-        const page = await pdf.getPage(i);
-        const content = await page.getTextContent();
-        pages.push(content.items.map(it=>it.str).join(' '));
-      }
-      const text = pages.join('\n\n');
-      if(text.trim().length < 30){
-        alert(`"${file.name}" parece ser um PDF escaneado/foto (sem texto extraível). Tente enviar como imagem (JPG/PNG).`);
-        return;
-      }
-      pendingAttachments.push({ kind:'examText', text, label:file.name });
-      renderAttachments();
-    }catch(e){
-      alert('Erro ao ler o PDF: ' + e.message);
+  } else if(isPdf){
+    if(!window['pdfjsLib']){
+      throw new Error('o leitor de PDF não carregou (verifique a conexão ou desative bloqueadores de anúncio, e recarregue a página).');
     }
+    const buf = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+    let pages = [];
+    for(let i=1;i<=pdf.numPages;i++){
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      pages.push(content.items.map(it=>it.str).join(' '));
+    }
+    const text = pages.join('\n\n');
+    if(text.trim().length < 30){
+      throw new Error('esse PDF parece ser escaneado/foto (sem texto extraível). Tente enviar como imagem (JPG/PNG) ou tire um print.');
+    }
+    pendingAttachments.push({ kind:'examText', text, label:name });
+    renderAttachments();
   } else {
-    alert(`Formato de "${file.name}" não suportado. Envie imagens (JPG/PNG) ou PDF.`);
+    throw new Error('formato não suportado. Envie imagens (JPG/PNG) ou PDF.');
   }
 }
 
 async function handleFileSelect(fileList){
-  const files = Array.from(fileList).slice(0, MAX_ATTACHMENTS - pendingAttachments.length);
-  for(const file of files){ await fileToAttachment(file); }
+  const all = Array.from(fileList || []);
+  if(!all.length) return;
+  const room = MAX_ATTACHMENTS - pendingAttachments.length;
+  if(room <= 0){ alert(`Limite de ${MAX_ATTACHMENTS} anexos por pergunta.`); return; }
+  if(all.length > room){ alert(`Só cabem mais ${room} anexo(s) (limite de ${MAX_ATTACHMENTS} por pergunta). Os demais foram ignorados.`); }
+  const files = all.slice(0, room);
+
+  processingFiles += files.length;
+  renderAttachments();
+  for(const file of files){
+    try{
+      await fileToAttachment(file);
+    }catch(e){
+      alert(`Não consegui anexar "${file.name || 'arquivo'}": ${e.message}`);
+    }finally{
+      processingFiles = Math.max(0, processingFiles - 1);
+      renderAttachments();
+    }
+  }
+}
+
+// Copia a lista de arquivos ANTES de limpar o campo (assim o mesmo arquivo pode ser escolhido de novo depois).
+function onFileInputChange(event){
+  const files = Array.from(event.target.files || []);
+  event.target.value = '';
+  handleFileSelect(files);
 }
 
 const chatCol = document.getElementById('chatCol');
@@ -437,6 +500,7 @@ async function sendMessage(){
       body: JSON.stringify(body)
     });
     if(response.status === 401){ window.location.href = '/login.html'; return; }
+    if(response.status === 413){ throw new Error('anexos_grandes'); }
     const data = await response.json();
     const answer = data.answer || 'Não consegui gerar uma resposta agora. Tente novamente.';
     const usedSources = data.sources || [];
@@ -455,10 +519,12 @@ async function sendMessage(){
     if(/dose|mg\/m|mg\/kg|posologia/i.test(answer)){
       extra += `<div class="dose-warning">⚠ Dose de referência didática. Confirme sempre com a fonte original e com a mentora antes de qualquer uso clínico.</div>`;
     }
-    thinkingEl.querySelector('.bubble').innerHTML = marked.parse(answer) + extra;
+    thinkingEl.querySelector('.bubble').innerHTML = renderMarkdown(answer) + extra;
     loadConversationList();
   }catch(e){
-    thinkingEl.querySelector('.bubble').innerHTML = 'Erro ao consultar a IA. Verifique a conexão e tente novamente.';
+    thinkingEl.querySelector('.bubble').innerHTML = (e && e.message === 'anexos_grandes')
+      ? 'Os anexos ficaram grandes demais para enviar. Tente com menos arquivos, ou com fotos menores.'
+      : 'Erro ao consultar a IA. Verifique a conexão e tente novamente.';
   }
   document.getElementById('sendBtn').disabled = false;
 }
