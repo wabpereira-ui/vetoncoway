@@ -718,6 +718,10 @@ app.get('/brand/:key', async (req, res) => {
   try {
     if (!validAssetKey(req.params.key)) return res.status(404).end();
     const a = await getAsset(req.params.key);
+    if (!a && (req.params.key === 'icon192' || req.params.key === 'icon512')) {
+      res.set('Cache-Control', 'public, max-age=3600');
+      return res.sendFile(path.join(__dirname, 'public', 'icons', `default-${req.params.key.slice(4)}.png`));
+    }
     if (!a) return res.status(404).end();
     res.set('Content-Type', a.mime);
     res.set('Cache-Control', 'public, max-age=86400');
@@ -725,6 +729,45 @@ app.get('/brand/:key', async (req, res) => {
     res.set('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox");
     res.send(Buffer.from(a.data, 'base64'));
   } catch (e) { res.status(500).end(); }
+});
+
+// ---------- PWA: app instalável no celular ----------
+app.get('/manifest.webmanifest', async (req, res) => {
+  try {
+    const c = await getSettings();
+    const v = await assetVersions();
+    const icon = (k, size) => `/brand/${k}${v[k] ? '?v=' + v[k] : ''}`;
+    const i192 = icon('icon192'), i512 = icon('icon512');
+    res.set('Content-Type', 'application/manifest+json; charset=utf-8');
+    res.set('Cache-Control', 'public, max-age=300');
+    res.send(JSON.stringify({
+      id: '/', name: c.appName, short_name: c.appName.slice(0, 12), description: c.tagline, lang: 'pt-BR',
+      start_url: '/', scope: '/', display: 'standalone', orientation: 'any',
+      theme_color: c.primaryColor, background_color: '#F1F3EE', categories: ['medical', 'education'],
+      icons: [
+        { src: i192, sizes: '192x192', type: 'image/png', purpose: 'any' },
+        { src: i512, sizes: '512x512', type: 'image/png', purpose: 'any' },
+        { src: i512, sizes: '512x512', type: 'image/png', purpose: 'maskable' }
+      ]
+    }));
+  } catch (e) { res.status(500).end(); }
+});
+
+// Service worker mínimo e seguro: não guarda nada em cache (para ninguém ver dados antigos ou de outra conta);
+// só mostra uma página simples quando o aparelho está sem internet.
+app.get('/sw.js', (req, res) => {
+  res.set('Content-Type', 'application/javascript; charset=utf-8');
+  res.set('Cache-Control', 'no-cache');
+  res.send(`self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', e => {
+  if (e.request.mode !== 'navigate') return;
+  e.respondWith(fetch(e.request).catch(() => new Response(
+    '<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sem conexão</title></head>' +
+    '<body style="font-family:sans-serif;text-align:center;padding:48px 24px;color:#1E2A32;background:#F1F3EE"><h2>Sem conexão</h2><p>Conecte-se à internet e tente de novo.</p><p><button onclick="location.reload()" style="padding:10px 18px;font-size:16px">Tentar de novo</button></p></body></html>',
+    { headers: { 'Content-Type': 'text/html; charset=utf-8' } })));
+});
+`);
 });
 
 app.get('/login.html', (req, res) => {
@@ -1205,7 +1248,7 @@ async function saveSettings(input) {
 // ---------- Imagens (logo, foto, banners) e banners ----------
 const ASSETS_PATH = path.join(__dirname, 'assets.json');
 const BANNERS_PATH = path.join(__dirname, 'banners.json');
-const ASSET_KEYS = ['logo', 'logoLight', 'photo'];
+const ASSET_KEYS = ['logo', 'logoLight', 'photo', 'icon192', 'icon512'];
 const ASSET_MIMES = ['image/png', 'image/jpeg', 'image/webp', 'image/svg+xml'];
 const ASSET_MAX_BYTES = 1.5 * 1024 * 1024;
 const readJson = (p, fallback) => { try { return fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : fallback; } catch (e) { return fallback; } };
