@@ -15,7 +15,44 @@
   }
   *{box-sizing:border-box;}
   body{ margin:0; background:var(--paper); color:var(--ink); font-family:'IBM Plex Sans',sans-serif; }
-  .header{ padding:22px 28px 0; border-bottom:2px solid var(--navy); background:var(--card); }
+  .shell{ display:flex; min-height:100vh; }
+  .side{ width:236px; flex-shrink:0; background:var(--navy); color:#E7ECEF; padding:22px 14px; position:sticky; top:0; height:100vh; overflow-y:auto; }
+  .side .brand{ font-family:'Source Serif 4',serif; font-weight:700; font-size:18px; color:#fff; margin:0 8px 2px; }
+  .side .brand-sub{ font-family:'IBM Plex Mono',monospace; font-size:10.5px; letter-spacing:1.6px; text-transform:uppercase; color:#9FB3BF; margin:0 8px 18px; }
+  .side .grp{ font-family:'IBM Plex Mono',monospace; font-size:10px; letter-spacing:1.8px; text-transform:uppercase; color:#8CA3B0; margin:18px 8px 6px; }
+  .nav{ display:flex; align-items:center; justify-content:space-between; width:100%; text-align:left; background:none; border:none; color:#DCE4E8; font-family:'IBM Plex Sans',sans-serif; font-size:14px; padding:9px 10px; border-radius:4px; cursor:pointer; }
+  .nav:hover{ background:rgba(255,255,255,.07); }
+  .nav.active{ background:rgba(255,255,255,.14); color:#fff; font-weight:600; }
+  .nav .bdg{ background:var(--amber); color:#fff; font-family:'IBM Plex Mono',monospace; font-size:10.5px; border-radius:10px; padding:1px 7px; }
+  .content{ flex:1; min-width:0; }
+  .pagehead{ padding:24px 32px 0; }
+  .pagehead h1{ font-family:'Source Serif 4',serif; font-weight:700; font-size:24px; color:var(--navy); margin:0; }
+  .pagehead p{ font-size:13.5px; color:var(--ink-soft); margin:4px 0 0; }
+  .kpis{ display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; }
+  .kpi{ background:var(--card); border:1px solid var(--line); border-top:3px solid var(--sage); border-radius:3px; padding:14px; }
+  .kpi .n{ font-family:'Source Serif 4',serif; font-weight:700; font-size:30px; color:var(--navy); line-height:1.1; }
+  .kpi .l{ font-size:12.5px; color:var(--ink-soft); margin-top:4px; }
+  .todo{ display:flex; align-items:center; justify-content:space-between; gap:12px; background:var(--card); border:1px solid var(--line); border-left:3px solid var(--amber); border-radius:2px; padding:12px 14px; margin-bottom:8px; font-size:14px; }
+  .todo.ok{ border-left-color:var(--sage); color:var(--ink-soft); }
+  .toolbar{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }
+  .toolbar input[type=text]{ flex:1; min-width:200px; margin:0; }
+  .toolbar select{ width:auto; margin:0; }
+  .btn.ghost{ background:none; color:var(--sage-dark); border:1px solid var(--sage-dark); }
+  .btn.ghost:hover{ background:var(--sage-dark); color:#fff; }
+  .pager{ display:flex; gap:10px; align-items:center; justify-content:center; margin:14px 0; font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--ink-soft); }
+  .badge{ display:inline-block; font-family:'IBM Plex Mono',monospace; font-size:10.5px; letter-spacing:.5px; text-transform:uppercase; padding:1px 7px; border-radius:9px; background:#E6EFEA; color:var(--sage-dark); margin-left:6px; vertical-align:middle; }
+  .badge.warn{ background:#F7E9D8; color:#7A4E1F; }
+  details.fold > summary{ cursor:pointer; list-style:none; font-family:'IBM Plex Mono',monospace; font-size:12px; letter-spacing:.5px; text-transform:uppercase; color:#fff; background:var(--sage-dark); display:inline-block; border-radius:3px; padding:9px 14px; margin-bottom:12px; }
+  details.fold[open] > summary{ background:var(--navy); }
+  details.fold > summary::-webkit-details-marker{ display:none; }
+  @media (max-width: 820px){
+    .shell{ flex-direction:column; }
+    .side{ width:100%; height:auto; position:static; display:flex; flex-wrap:wrap; gap:4px; padding:12px; }
+    .side .brand,.side .brand-sub,.side .grp{ display:none; }
+    .nav{ width:auto; padding:8px 12px; font-size:13px; }
+    .pagehead{ padding:18px 16px 0; } .wrap{ padding:0 16px; }
+  }
+  .header{ display:none; }
   .eyebrow{ font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:2.5px; color:var(--sage-dark); text-transform:uppercase; margin-bottom:6px; }
   .title{ font-family:'Source Serif 4',serif; font-weight:700; font-size:24px; color:var(--navy); margin:0; }
   .subtitle{ font-size:13.5px; color:var(--ink-soft); margin:4px 0 18px; }
@@ -29,7 +66,7 @@
   .tab.active{ color:var(--navy); border-bottom-color:var(--sage); font-weight:600; }
   .tab:hover{ color:var(--sage-dark); }
 
-  .wrap{ max-width:760px; margin:28px auto; padding:0 20px; }
+  .wrap{ max-width:900px; margin:22px 0 40px; padding:0 32px; }
   .page{ display:none; }
   .page.active{ display:block; }
 
@@ -60,25 +97,37 @@
 </style>
 </head>
 <body>
-  <div class="header">
-    <div class="eyebrow">Área restrita · Mentora</div>
-    <h1 class="title">Agente Oncoway — Gerenciar Acervo</h1>
-    <div class="subtitle">Alunos não têm acesso a esta página.</div>
-    <div class="tabs">
-      <button class="tab active" id="tabBtn-acervo" onclick="showPage('acervo')">📚 Acervo</button>
-      <button class="tab" id="tabBtn-triagem" onclick="showPage('triagem')">🔎 Triagem Oncoway</button>
-      <button class="tab" id="tabBtn-alunos" onclick="showPage('alunos')">🎓 Alunos</button>
-      <button class="tab" id="tabBtn-atividade" onclick="showPage('atividade')">📊 Atividade</button>
-      <button class="tab" id="tabBtn-aparencia" onclick="showPage('aparencia')">🎨 Aparência</button>
-      <button class="tab" id="tabBtn-config" onclick="showPage('config')">⚙️ Configurações</button>
-    </div>
-  </div>
+  <div class="shell">
+  <nav class="side">
+    <div class="brand">Oncoway</div>
+    <div class="brand-sub">Painel da mentora</div>
+    <button class="nav active" id="tabBtn-geral" onclick="showPage('geral')">🏠 Visão geral <span class="bdg" id="bdg-geral" style="display:none;"></span></button>
+    <div class="grp">Conteúdo</div>
+    <button class="nav" id="tabBtn-acervo" onclick="showPage('acervo')">📚 Acervo</button>
+    <button class="nav" id="tabBtn-triagem" onclick="showPage('triagem')">🔎 Triagem e doses <span class="bdg" id="bdg-triagem" style="display:none;"></span></button>
+    <div class="grp">Pessoas</div>
+    <button class="nav" id="tabBtn-alunos" onclick="showPage('alunos')">🎓 Alunos</button>
+    <div class="grp">Desempenho</div>
+    <button class="nav" id="tabBtn-atividade" onclick="showPage('atividade')">📊 Atividade e lacunas</button>
+    <div class="grp">Marca e sistema</div>
+    <button class="nav" id="tabBtn-aparencia" onclick="showPage('aparencia')">🎨 Aparência</button>
+    <button class="nav" id="tabBtn-config" onclick="showPage('config')">⚙️ Identidade e IA</button>
+  </nav>
+  <div class="content">
+    <div class="pagehead"><h1 id="pageTitle">Visão geral</h1><p id="pageDesc"></p></div>
 
   <div class="wrap">
 
+    <!-- ABA: VISÃO GERAL -->
+    <div class="page active" id="page-geral">
+      <div class="kpis" id="kpis"><div class="status">Carregando...</div></div>
+      <h2>Pendências</h2>
+      <div id="todos"></div>
+    </div>
+
     <!-- ABA: ACERVO -->
-    <div class="page active" id="page-acervo">
-      <h2>Adicionar material</h2>
+    <div class="page" id="page-acervo">
+      <details class="fold" id="addDocFold"><summary>+ Adicionar material</summary>
       <div class="panel">
         <label class="upload-btn" for="pdfInput">📄 Enviar PDF ou TXT</label>
         <input id="pdfInput" type="file" accept=".pdf,.txt" multiple style="display:none;" onchange="handleFileUpload(event)">
@@ -88,9 +137,15 @@
         <textarea id="docText" placeholder="Ou cole aqui o texto do artigo, capítulo ou transcrição da aula..."></textarea>
         <button class="btn" onclick="addDocument()">Salvar no acervo</button>
       </div>
+      </details>
 
-      <h2>Materiais no acervo</h2>
+      <div class="toolbar">
+        <input type="text" id="docSearch" placeholder="Buscar material pelo nome..." oninput="docPage=1; drawDocs()">
+        <select id="docSort" onchange="docPage=1; drawDocs()"><option value="recent">Mais recentes</option><option value="name">Nome (A–Z)</option><option value="size">Maiores</option></select>
+        <span class="status" id="docCount" style="margin:0;"></span>
+      </div>
       <div id="docList"></div>
+      <div class="pager" id="docPager"></div>
     </div>
 
     <!-- ABA: TRIAGEM ONCOWAY -->
@@ -111,7 +166,7 @@
 
     <!-- ABA: ALUNOS -->
     <div class="page" id="page-alunos">
-      <h2>Convidar aluno</h2>
+      <details class="fold" id="inviteFold"><summary>+ Convidar aluno</summary>
       <div class="panel">
         <div style="font-size:12px; color:var(--ink-soft); margin-bottom:12px;">Cadastre o nome e e-mail do aluno — ele mesmo cria a senha na tela de "Primeiro acesso".</div>
         <input id="studentName" type="text" placeholder="Nome do aluno (ex: João Silva)">
@@ -121,7 +176,7 @@
         <div id="studentStatus" class="status"></div>
       </div>
 
-      <details style="margin-top:10px;">
+      <details style="margin:10px 0 14px;">
         <summary style="cursor:pointer; font-family:'IBM Plex Mono',monospace; font-size:12px; letter-spacing:.5px; text-transform:uppercase; color:var(--sage-dark);">+ Convidar vários alunos de uma vez</summary>
         <div class="panel" style="margin-top:10px;">
           <div style="font-size:12px; color:var(--ink-soft); margin-bottom:10px;">Um aluno por linha, no formato <code>Nome, e-mail</code>. Exemplo:<br><code>João Silva, joao@email.com</code><br><code>Maria Souza, maria@email.com</code></div>
@@ -131,8 +186,22 @@
         </div>
       </details>
 
-      <h2>Alunos cadastrados</h2>
+      </details>
+
+      <div class="toolbar">
+        <input type="text" id="stSearch" placeholder="Buscar por nome, e-mail ou WhatsApp..." oninput="stPage=1; drawStudents()">
+        <select id="stFilter" onchange="stPage=1; drawStudents()">
+          <option value="todos">Todos</option>
+          <option value="pendente">Aguardando primeiro acesso</option>
+          <option value="ativo">Ativos (acessou nos últimos 7 dias)</option>
+          <option value="inativo">Sem acessar há 30+ dias</option>
+          <option value="nunca">Criou senha, nunca entrou</option>
+        </select>
+        <button class="btn ghost" onclick="exportStudentsCsv()">Exportar CSV</button>
+      </div>
+      <div class="status" id="stCount" style="margin:-4px 0 10px;"></div>
       <div id="studentList"></div>
+      <div class="pager" id="stPager"></div>
     </div>
 
     <!-- ABA: ATIVIDADE -->
@@ -250,6 +319,8 @@
     </div>
 
   </div>
+  </div>
+  </div>
 
 <script>
 if(window['pdfjsLib']){
@@ -258,15 +329,59 @@ if(window['pdfjsLib']){
 
 function escapeHtml(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
+const PAGES = {
+  geral:     ['Visão geral', 'O que está acontecendo agora e o que precisa da sua atenção.'],
+  acervo:    ['Acervo', 'Os materiais que alimentam as respostas. Busque, adicione ou remova.'],
+  triagem:   ['Triagem e doses', 'Catalogação automática dos artigos e revisão das doses extraídas.'],
+  alunos:    ['Alunos', 'Convites, acessos e status de cada aluno.'],
+  atividade: ['Atividade e lacunas', 'Uso do app, assuntos mais procurados e perguntas que o acervo não cobriu.'],
+  aparencia: ['Aparência', 'Logotipos, cores, banners e links do app.'],
+  config:    ['Identidade e IA', 'Nome, voz da mentora e como a IA usa a internet.']
+};
 function showPage(name){
-  ['acervo','triagem','alunos','atividade','aparencia','config'].forEach(p=>{
+  if(!PAGES[name]) name = 'geral';
+  Object.keys(PAGES).forEach(p=>{
     document.getElementById('page-'+p).classList.toggle('active', p===name);
     document.getElementById('tabBtn-'+p).classList.toggle('active', p===name);
   });
+  document.getElementById('pageTitle').textContent = PAGES[name][0];
+  document.getElementById('pageDesc').textContent = PAGES[name][1];
   try{ localStorage.setItem('oncoway_admin_tab', name); }catch(e){}
+  window.scrollTo(0, 0);
+  if(name === 'geral') loadOverview();
   if(name === 'atividade') loadAnalytics();
   if(name === 'config') loadConfig();
   if(name === 'aparencia') loadAppearance();
+}
+
+function setBadge(id, n){
+  const el = document.getElementById(id); if(!el) return;
+  el.textContent = n; el.style.display = n > 0 ? 'inline-block' : 'none';
+}
+async function loadOverview(){
+  let o;
+  try{ const r = await fetch('/api/admin/overview'); if(!r.ok) throw new Error(); o = await r.json(); }
+  catch(e){ document.getElementById('kpis').innerHTML = '<div class="status">Não foi possível carregar a visão geral.</div>'; return; }
+  const kpi = (n, l) => `<div class="kpi"><div class="n">${n}</div><div class="l">${l}</div></div>`;
+  const dash = o.dbEnabled ? null : '–';
+  document.getElementById('kpis').innerHTML = [
+    kpi(o.students.total, 'alunos cadastrados'),
+    kpi(dash ?? o.students.active7d, 'ativos nos últimos 7 dias'),
+    kpi(dash ?? o.questions.last30d, 'perguntas em 30 dias'),
+    kpi(o.questions.acervoShare == null ? '–' : o.questions.acervoShare + '%', 'respostas vindas do acervo (30 dias)'),
+    kpi(o.docs.total, 'materiais no acervo')
+  ].join('');
+  const todos = [];
+  if(o.students.pendingInvite) todos.push([`${o.students.pendingInvite} aluno(s) convidado(s) ainda não criaram a senha`, 'alunos', 'Ver alunos']);
+  if(o.students.neverLoggedIn) todos.push([`${o.students.neverLoggedIn} aluno(s) criaram a senha mas nunca entraram`, 'alunos', 'Ver alunos']);
+  if(o.docs.uncatalogued) todos.push([`${o.docs.uncatalogued} material(is) ainda sem catalogação`, 'triagem', 'Catalogar']);
+  if(o.questions.uncovered) todos.push([`${o.questions.uncovered} pergunta(s) sem cobertura no acervo nos últimos 30 dias`, 'atividade', 'Ver perguntas']);
+  if(!o.dbEnabled) todos.push(['Banco de dados não configurado: parte dos recursos fica desativada', 'config', 'Ver']);
+  document.getElementById('todos').innerHTML = todos.length
+    ? todos.map(t => `<div class="todo"><span>${escapeHtml(t[0])}</span><button class="btn ghost" onclick="showPage('${t[1]}')">${t[2]}</button></div>`).join('')
+    : '<div class="todo ok">Tudo em dia. Nenhuma pendência ✓</div>';
+  setBadge('bdg-geral', todos.length);
+  setBadge('bdg-triagem', o.docs.uncatalogued || 0);
 }
 
 async function loadDocs(){
@@ -275,11 +390,28 @@ async function loadDocs(){
   renderDocs(docs);
 }
 
-function renderDocs(docs){
+let allDocs = [], docPage = 1;
+const PAGE_SIZE = 20;
+function renderDocs(docs){ allDocs = docs; drawDocs(); }
+function pagerHtml(page, pages, fnPrev, fnNext){
+  if(pages <= 1) return '';
+  return `<button class="btn ghost" ${page<=1?'disabled':''} onclick="${fnPrev}">‹ Anterior</button><span>${page} de ${pages}</span><button class="btn ghost" ${page>=pages?'disabled':''} onclick="${fnNext}">Próxima ›</button>`;
+}
+function drawDocs(){
+  const q = document.getElementById('docSearch').value.trim().toLowerCase();
+  const sort = document.getElementById('docSort').value;
+  let list = allDocs.map((d, i) => ({ d, i })).filter(x => !q || x.d.name.toLowerCase().includes(q));
+  if(sort === 'name') list.sort((a, b) => a.d.name.localeCompare(b.d.name, 'pt-BR'));
+  else if(sort === 'size') list.sort((a, b) => b.d.text.length - a.d.text.length);
+  else list.sort((a, b) => b.i - a.i);
+  const pages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
+  if(docPage > pages) docPage = pages;
+  const slice = list.slice((docPage - 1) * PAGE_SIZE, docPage * PAGE_SIZE);
+  document.getElementById('docCount').textContent = `${list.length} de ${allDocs.length} material(is)`;
   const el = document.getElementById('docList');
   el.innerHTML = '';
-  if(!docs.length){ el.innerHTML = '<div class="status">Nenhum material no acervo ainda.</div>'; return; }
-  docs.forEach(d=>{
+  if(!slice.length){ el.innerHTML = `<div class="status">${allDocs.length ? 'Nenhum material encontrado para essa busca.' : 'Nenhum material no acervo ainda.'}</div>`; }
+  slice.forEach(({ d }) => {
     const wc = d.text.split(/\s+/).length;
     const card = document.createElement('div');
     card.className = 'doc-card';
@@ -288,9 +420,11 @@ function renderDocs(docs){
       <button onclick="removeDoc('${d.id}')">remover</button>`;
     el.appendChild(card);
   });
+  document.getElementById('docPager').innerHTML = pagerHtml(docPage, pages, 'docPage--; drawDocs()', 'docPage++; drawDocs()');
 }
 
 async function removeDoc(id){
+  if(!confirm('Remover este material do acervo? As respostas deixam de usá-lo.')) return;
   const res = await fetch('/api/admin/docs/'+id, { method:'DELETE' });
   renderDocs(await res.json());
 }
@@ -457,23 +591,58 @@ async function loadStudents(){
   renderStudents(await res.json());
 }
 
-function renderStudents(students){
+let allStudents = [], stPage = 1;
+function renderStudents(students){ allStudents = students; drawStudents(); }
+function studentMatches(s, filter){
+  const day = 86400000, last = s.lastLogin ? new Date(s.lastLogin).getTime() : null;
+  if(filter === 'pendente') return !s.passwordSet;
+  if(filter === 'ativo') return last !== null && Date.now() - last < 7 * day;
+  if(filter === 'inativo') return s.passwordSet && last !== null && Date.now() - last > 30 * day;
+  if(filter === 'nunca') return s.passwordSet && last === null;
+  return true;
+}
+function filteredStudents(){
+  const q = document.getElementById('stSearch').value.trim().toLowerCase();
+  const f = document.getElementById('stFilter').value;
+  return allStudents.filter(s => studentMatches(s, f) &&
+    (!q || (s.name + ' ' + s.email + ' ' + (s.phone || '')).toLowerCase().includes(q)));
+}
+function drawStudents(){
+  const list = filteredStudents();
+  const pages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
+  if(stPage > pages) stPage = pages;
+  const slice = list.slice((stPage - 1) * PAGE_SIZE, stPage * PAGE_SIZE);
+  document.getElementById('stCount').textContent = `${list.length} de ${allStudents.length} aluno(s)`;
   const el = document.getElementById('studentList');
   el.innerHTML = '';
-  if(!students.length){ el.innerHTML = '<div class="status">Nenhum aluno cadastrado ainda.</div>'; return; }
-  students.forEach(s=>{
-    const statusLabel = s.passwordSet ? 'ativo' : 'aguardando primeiro acesso';
-    const phoneLabel = s.phone ? `· WhatsApp: ${escapeHtml(s.phone)}` : '· sem WhatsApp cadastrado';
+  if(!slice.length){ el.innerHTML = `<div class="status">${allStudents.length ? 'Nenhum aluno encontrado com esses filtros.' : 'Nenhum aluno cadastrado ainda.'}</div>`; }
+  slice.forEach(s=>{
+    const badge = !s.passwordSet ? '<span class="badge warn">aguardando primeiro acesso</span>'
+      : (s.lastLogin ? '<span class="badge">ativo</span>' : '<span class="badge warn">nunca entrou</span>');
+    const access = s.lastLogin ? `último acesso: ${timeAgoAnalytics(s.lastLogin)} · ${s.loginCount||0} login(s)` : 'sem acessos ainda';
+    const phoneLabel = s.phone ? `WhatsApp: ${escapeHtml(s.phone)}` : 'sem WhatsApp';
     const card = document.createElement('div');
     card.className = 'doc-card';
-    card.style.paddingRight = '150px';
-    card.innerHTML = `<div class="doc-name">${escapeHtml(s.name)}</div>
-      <div class="doc-meta">${escapeHtml(s.email)} · ${statusLabel} ${phoneLabel}</div>
-      <button style="right:110px;" onclick="editPhone('${s.id}','${escapeHtml(s.phone||'')}')" title="Definir/editar número de WhatsApp">whatsapp</button>
-      <button style="right:60px;" onclick="resetStudent('${s.id}')" title="Resetar senha (aluno esqueceu)">resetar</button>
+    card.style.paddingRight = '170px';
+    card.innerHTML = `<div class="doc-name">${escapeHtml(s.name)}${badge}</div>
+      <div class="doc-meta">${escapeHtml(s.email)} · ${phoneLabel}</div>
+      <div class="doc-meta">${access}</div>
+      <button style="right:120px;" onclick="editPhone('${s.id}','${escapeHtml(s.phone||'')}')" title="Definir/editar número de WhatsApp">whatsapp</button>
+      <button style="right:66px;" onclick="resetStudent('${s.id}')" title="Resetar senha (aluno esqueceu)">resetar</button>
       <button onclick="removeStudent('${s.id}')">remover</button>`;
     el.appendChild(card);
   });
+  document.getElementById('stPager').innerHTML = pagerHtml(stPage, pages, 'stPage--; drawStudents()', 'stPage++; drawStudents()');
+}
+function exportStudentsCsv(){
+  const q = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+  const rows = [['Nome','E-mail','WhatsApp','Status','Último acesso','Logins']].concat(filteredStudents().map(s => [
+    s.name, s.email, s.phone || '', !s.passwordSet ? 'aguardando primeiro acesso' : (s.lastLogin ? 'ativo' : 'nunca entrou'),
+    s.lastLogin ? new Date(s.lastLogin).toLocaleString('pt-BR') : '', s.loginCount || 0]));
+  const csv = '\uFEFF' + rows.map(r => r.map(q).join(';')).join('\r\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  a.download = 'alunos-oncoway.csv'; document.body.appendChild(a); a.click(); a.remove();
 }
 
 async function editPhone(id, currentPhone){
@@ -512,6 +681,7 @@ async function resetStudent(id){
 }
 
 async function removeStudent(id){
+  if(!confirm('Remover este aluno? As conversas dele também serão apagadas.')) return;
   const res = await fetch('/api/admin/students/'+id, { method:'DELETE' });
   renderStudents(await res.json());
 }
@@ -767,10 +937,9 @@ async function removeBanner(id){
 }
 
 // Lembra a última aba usada
-try{
-  const savedTab = localStorage.getItem('oncoway_admin_tab');
-  if(savedTab) showPage(savedTab);
-}catch(e){}
+let _startTab = 'geral';
+try{ _startTab = localStorage.getItem('oncoway_admin_tab') || 'geral'; }catch(e){}
+showPage(_startTab);
 </script>
 </body>
 </html>
