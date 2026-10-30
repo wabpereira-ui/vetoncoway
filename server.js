@@ -133,6 +133,25 @@ async function initDb() {
       updated_at TIMESTAMPTZ DEFAULT now()
     );
   `);
+  // Planos e cotas. Alunos já existentes ficam no plano Mentoria (DEFAULT), então nada muda para eles.
+  await pool.query(`ALTER TABLE students ADD COLUMN IF NOT EXISTS plan TEXT DEFAULT 'mentoria';`);
+  await pool.query(`ALTER TABLE students ADD COLUMN IF NOT EXISTS free_exams_used INT DEFAULT 0;`);
+  // Registro de uso (cotas + custo real estimado de cada resposta).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS usage_events (
+      id BIGSERIAL PRIMARY KEY,
+      student_id TEXT REFERENCES students(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL,
+      channel TEXT,
+      tier TEXT,
+      input_tokens INT DEFAULT 0,
+      output_tokens INT DEFAULT 0,
+      searches INT DEFAULT 0,
+      cost_usd NUMERIC(12,6) DEFAULT 0,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS usage_events_student_time ON usage_events (student_id, created_at);`);
   // Aparência: imagens (logo, foto da mentora, banners) e banners editáveis pelo /admin.
   await pool.query(`
     CREATE TABLE IF NOT EXISTS app_assets (
@@ -222,7 +241,7 @@ function saveStudentsFile(students) {
 
 async function loadStudents() {
   if (useDb) {
-    const { rows } = await pool.query('SELECT id, name, email, phone, password_set AS "passwordSet", salt, hash, last_login AS "lastLogin", COALESCE(login_count,0) AS "loginCount", created_at AS "createdAt" FROM students ORDER BY created_at ASC');
+    const { rows } = await pool.query('SELECT id, name, email, phone, password_set AS "passwordSet", salt, hash, last_login AS "lastLogin", COALESCE(login_count,0) AS "loginCount", created_at AS "createdAt", COALESCE(plan,\'mentoria\') AS plan, COALESCE(free_exams_used,0) AS "freeExamsUsed" FROM students ORDER BY created_at ASC');
     return rows;
   }
   return loadStudentsFile();
@@ -332,12 +351,13 @@ async function deleteStudent(id) {
 }
 
 // ---- Conversas salvas (historico persistente por aluno, como no Claude) ----
-async function listConversations(studentId) {
+async function listConversations(studentId, historyDays = 0) {
   if (!useDb) return [];
-  const { rows } = await pool.query(
-    'SELECT id, title, updated_at FROM conversations WHERE student_id=$1 ORDER BY updated_at DESC',
-    [studentId]
-  );
+  const { rows } = historyDays > 0
+    ? await pool.query(
+        `SELECT id, title, updated_at FROM conversations WHERE student_id=$1 AND updated_at > now() - make_interval(days => $2) ORDER BY updated_at DESC`,
+        [studentId, historyDays])
+    : await pool.query('SELECT id, title, updated_at FROM conversations WHERE student_id=$1 ORDER BY updated_at DESC', [studentId]);
   return rows;
 }
 async function createConversation(studentId) {
@@ -505,10 +525,12 @@ app.post('/api/logout', (req, res) => {
   destroySession(req, res);
   res.json({ ok: true });
 });
-app.get('/api/me', (req, res) => {
+app.get('/api/me', async (req, res) => {
   const session = getSession(req);
   if (!session) return res.status(401).json({ error: 'not_authenticated' });
-  res.json({ name: session.name });
+  let usage = null;
+  try { usage = usageSummary(await getUsageInfo(session.studentId)); } catch (e) { console.error(e.message); }
+  res.json({ name: session.name, usage });
 });
 
 // Página principal e demais arquivos estáticos exigem login de aluno
@@ -778,8 +800,39 @@ const DEFAULT_SETTINGS = {
   fontHeading: 'serif',      // serif | sans
   radius: 'reto',            // reto | suave | redondo
   showEntryCards: 'sim',     // sim | nao
-  quickLinks: '[]'           // JSON: [{label,url}] até 6
+  quickLinks: '[]',          // JSON: [{label,url}] até 6
+  // Planos (editáveis em /admin → Planos e custos). 0 em questions/exams = recurso indisponível.
+  plans: '',                 // JSON; vazio = padrões abaixo (DEFAULT_PLANS)
+  freeExamsOnce: '5',        // exames grátis, uma única vez, para quem está no plano Grátis
+  upgradeUrl: '',            // para onde vai o botão "Assinar" (página de vendas/checkout)
+  // Preços da API para ESTIMAR o custo (confira na Anthropic e ajuste): US$ por milhão de tokens e por mil buscas.
+  priceInputPerM: '3', priceOutputPerM: '15', priceSearchPer1k: '10', usdBrl: '5.5'
 };
+const PLAN_KEYS = ['gratis', 'assinante', 'mentoria'];
+const DEFAULT_PLANS = {
+  gratis:    { label: 'Grátis',    questions: 10,   exams: 0,    historyDays: 7, chunks: 2, whatsapp: false },
+  assinante: { label: 'Assinante', questions: 150,  exams: 20,   historyDays: 0, chunks: 0, whatsapp: true },
+  mentoria:  { label: 'Mentoria',  questions: 1000, exams: 1000, historyDays: 0, chunks: 0, whatsapp: true }
+};
+const clampInt = (v, min, max, dflt) => { const n = Math.round(Number(v)); return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : dflt; };
+function sanitizePlans(raw) {
+  let p = {};
+  try { p = typeof raw === 'string' && raw ? JSON.parse(raw) : (raw || {}); } catch (e) {}
+  const out = {};
+  for (const k of PLAN_KEYS) {
+    const d = DEFAULT_PLANS[k], x = (p && p[k]) || {};
+    out[k] = {
+      label: String(x.label || d.label).trim().slice(0, 30) || d.label,
+      questions: clampInt(x.questions, 0, 100000, d.questions),
+      exams: clampInt(x.exams, 0, 100000, d.exams),
+      historyDays: clampInt(x.historyDays, 0, 3650, d.historyDays),
+      chunks: clampInt(x.chunks, 0, 10, d.chunks),
+      whatsapp: x.whatsapp === undefined ? d.whatsapp : (x.whatsapp === true || x.whatsapp === 'true')
+    };
+  }
+  return out;
+}
+const cleanNum = (v, dflt, max) => { const n = parseFloat(String(v).replace(',', '.')); return Number.isFinite(n) && n >= 0 ? String(Math.min(n, max)) : dflt; };
 const HEX = /^#[0-9a-fA-F]{6}$/;
 const OPTIONS = { fontHeading: ['serif', 'sans'], radius: ['reto', 'suave', 'redondo'], showEntryCards: ['sim', 'nao'] };
 function sanitizeQuickLinks(raw) {
@@ -810,6 +863,13 @@ async function getSettings() {
   for (const k of ['primaryColor', 'accentColor']) if (!HEX.test(merged[k])) merged[k] = DEFAULT_SETTINGS[k];
   for (const [k, list] of Object.entries(OPTIONS)) if (!list.includes(merged[k])) merged[k] = DEFAULT_SETTINGS[k];
   merged.quickLinks = sanitizeQuickLinks(merged.quickLinks);
+  merged.plans = JSON.stringify(sanitizePlans(merged.plans));
+  merged.freeExamsOnce = String(clampInt(merged.freeExamsOnce, 0, 100, 5));
+  if (!/^https?:\/\//i.test(merged.upgradeUrl)) merged.upgradeUrl = '';
+  merged.priceInputPerM = cleanNum(merged.priceInputPerM, '3', 1000);
+  merged.priceOutputPerM = cleanNum(merged.priceOutputPerM, '15', 1000);
+  merged.priceSearchPer1k = cleanNum(merged.priceSearchPer1k, '10', 1000);
+  merged.usdBrl = cleanNum(merged.usdBrl, '5.5', 100);
   _settingsCache = merged; _settingsAt = Date.now();
   return merged;
 }
@@ -817,7 +877,8 @@ async function getSettings() {
 async function saveSettings(input) {
   const clean = {};
   const limits = { appName: 60, tagline: 160, mentorName: 80, mentorTitle: 100, voice: 1500, searchMode: 20,
-    primaryColor: 7, accentColor: 7, fontHeading: 10, radius: 10, showEntryCards: 3, quickLinks: 2500 };
+    primaryColor: 7, accentColor: 7, fontHeading: 10, radius: 10, showEntryCards: 3, quickLinks: 2500,
+    plans: 4000, freeExamsOnce: 4, upgradeUrl: 300, priceInputPerM: 10, priceOutputPerM: 10, priceSearchPer1k: 10, usdBrl: 10 };
   for (const k of Object.keys(DEFAULT_SETTINGS)) {
     if (typeof input[k] === 'string') clean[k] = input[k].trim().slice(0, limits[k]);
   }
@@ -825,6 +886,12 @@ async function saveSettings(input) {
   for (const k of ['primaryColor', 'accentColor']) if (clean[k] !== undefined && !HEX.test(clean[k])) delete clean[k];
   for (const [k, list] of Object.entries(OPTIONS)) if (clean[k] !== undefined && !list.includes(clean[k])) delete clean[k];
   if (clean.quickLinks !== undefined) clean.quickLinks = sanitizeQuickLinks(input.quickLinks);
+  if (input.plans !== undefined) clean.plans = JSON.stringify(sanitizePlans(input.plans));
+  if (clean.freeExamsOnce !== undefined) clean.freeExamsOnce = String(clampInt(clean.freeExamsOnce, 0, 100, 5));
+  if (clean.upgradeUrl !== undefined && clean.upgradeUrl && !/^https?:\/\//i.test(clean.upgradeUrl)) delete clean.upgradeUrl;
+  for (const [k, d, m] of [['priceInputPerM', '3', 1000], ['priceOutputPerM', '15', 1000], ['priceSearchPer1k', '10', 1000], ['usdBrl', '5.5', 100]]) {
+    if (clean[k] !== undefined) clean[k] = cleanNum(clean[k], d, m);
+  }
   if (useDb) {
     for (const [k, v] of Object.entries(clean)) {
       await pool.query(
@@ -944,6 +1011,101 @@ async function getBranding() {
   return _brandingCache;
 }
 
+// ---------- Planos, cotas e custo ----------
+// Mês de cobrança = mês-calendário no horário de Brasília (UTC-3). A cota renova no dia 1º.
+function monthWindow(now = Date.now()) {
+  const bt = new Date(now - 3 * 3600000);
+  const y = bt.getUTCFullYear(), m = bt.getUTCMonth();
+  return { start: new Date(Date.UTC(y, m, 1) + 3 * 3600000), end: new Date(Date.UTC(y, m + 1, 1) + 3 * 3600000) };
+}
+function fmtDateBR(d) {
+  const bt = new Date(new Date(d).getTime() - 3 * 3600000);
+  return String(bt.getUTCDate()).padStart(2, '0') + '/' + String(bt.getUTCMonth() + 1).padStart(2, '0');
+}
+
+async function getUsageInfo(studentId) {
+  if (!useDb || !studentId) return null;
+  const cfg = await getSettings();
+  const plans = JSON.parse(cfg.plans);
+  const { rows } = await pool.query('SELECT plan, COALESCE(free_exams_used,0) AS fe FROM students WHERE id=$1', [studentId]);
+  if (!rows[0]) return null;
+  const plan = PLAN_KEYS.includes(rows[0].plan) ? rows[0].plan : 'mentoria';
+  const limits = plans[plan];
+  const w = monthWindow();
+  const u = await pool.query(
+    `SELECT kind, COUNT(*)::int AS c FROM usage_events WHERE student_id=$1 AND created_at >= $2 AND created_at < $3 GROUP BY kind`,
+    [studentId, w.start, w.end]);
+  const used = { questions: 0, exams: 0 };
+  u.rows.forEach(r => { if (r.kind === 'question') used.questions = r.c; if (r.kind === 'exam') used.exams = r.c; });
+  const freeTotal = plan === 'gratis' ? parseInt(cfg.freeExamsOnce, 10) : 0;
+  return {
+    plan, planLabel: limits.label, limits, used,
+    freeExamsLeft: Math.max(0, freeTotal - rows[0].fe), freeExamsTotal: freeTotal,
+    resetAt: w.end.toISOString(), upgradeUrl: cfg.upgradeUrl
+  };
+}
+
+// Resumo seguro para o app do aluno (sem dados internos).
+function usageSummary(info) {
+  if (!info) return null;
+  return {
+    plan: info.plan, planLabel: info.planLabel,
+    questions: { used: info.used.questions, limit: info.limits.questions },
+    exams: { used: info.used.exams, limit: info.limits.exams },
+    freeExams: info.freeExamsTotal ? { left: info.freeExamsLeft, total: info.freeExamsTotal } : null,
+    resetAt: info.resetAt, upgradeUrl: info.upgradeUrl, whatsapp: info.limits.whatsapp
+  };
+}
+
+// Decide se a pergunta pode seguir. Sem banco de dados não há cotas (tudo liberado).
+async function checkQuota(studentId, isExam) {
+  const info = await getUsageInfo(studentId);
+  if (!info) return { ok: true, info: null };
+  const renew = fmtDateBR(info.resetAt);
+  const base = { info, upgradeUrl: info.upgradeUrl, resetAt: info.resetAt, plan: info.plan, planLabel: info.planLabel };
+  if (isExam) {
+    if (info.used.exams < info.limits.exams) return { ok: true, info, useFreeHook: false };
+    if (info.plan === 'gratis' && info.freeExamsLeft > 0) return { ok: true, info, useFreeHook: true };
+    const exhaustedHook = info.plan === 'gratis' && info.freeExamsTotal > 0;
+    const message = info.limits.exams === 0
+      ? (exhaustedHook
+          ? `Você usou seus ${info.freeExamsTotal} exames grátis. A interpretação de exames faz parte do plano Assinante.`
+          : 'A interpretação de exames faz parte do plano Assinante.')
+      : `Você usou as ${info.limits.exams} interpretações de exame do mês. Sua cota renova em ${renew}.`;
+    return { ok: false, kind: 'exams', message, ...base };
+  }
+  if (info.used.questions >= info.limits.questions) {
+    return { ok: false, kind: 'questions',
+      message: `Você usou as ${info.limits.questions} perguntas do mês no plano ${info.planLabel}. Sua cota renova em ${renew}.`, ...base };
+  }
+  return { ok: true, info };
+}
+
+function computeCost(usage, cfg) {
+  const u = usage || {};
+  const inTok = u.input || 0, outTok = u.output || 0, searches = u.searches || 0;
+  const usd = inTok * parseFloat(cfg.priceInputPerM) / 1e6 + outTok * parseFloat(cfg.priceOutputPerM) / 1e6 + searches * parseFloat(cfg.priceSearchPer1k) / 1000;
+  return { inTok, outTok, searches, usd };
+}
+
+async function recordUsage(studentId, { isExam, useFreeHook, channel, tier, usage }) {
+  if (!useDb || !studentId) return;
+  try {
+    const cfg = await getSettings();
+    const c = computeCost(usage, cfg);
+    const kind = isExam ? (useFreeHook ? 'exam_free' : 'exam') : 'question';
+    await pool.query(
+      `INSERT INTO usage_events (student_id, kind, channel, tier, input_tokens, output_tokens, searches, cost_usd)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [studentId, kind, channel || 'web', tier || null, c.inTok, c.outTok, c.searches, c.usd.toFixed(6)]);
+    if (useFreeHook) await pool.query('UPDATE students SET free_exams_used = COALESCE(free_exams_used,0) + 1 WHERE id=$1', [studentId]);
+  } catch (e) { console.error('Falha ao registrar uso:', e.message); }
+}
+
+function quotaPayload(q) {
+  return { error: 'quota', kind: q.kind, message: q.message, plan: q.plan, planLabel: q.planLabel, resetAt: q.resetAt, upgradeUrl: q.upgradeUrl || '' };
+}
+
 const SEM_COBERTURA = 'SEM_COBERTURA_NO_ACERVO';
 
 // Regra compartilhada: decide o ESTILO da resposta conforme o tipo de pergunta.
@@ -991,7 +1153,7 @@ ${modeRule}
 7) Ao FINAL, em linha própria e por último, escreva EXATAMENTE uma tag (nada mais na linha): ${tagRule}. É só controle interno; o aluno não vê.`;
 }
 
-async function callClaude({ system, messages, tools, maxTokens }) {
+async function callClaude({ system, messages, tools, maxTokens, onUsage }) {
   const body = {
     model: 'claude-sonnet-4-6',
     max_tokens: maxTokens || 2000,
@@ -1012,6 +1174,10 @@ async function callClaude({ system, messages, tools, maxTokens }) {
   if (data.error) {
     console.error('Erro da API Anthropic:', data.error);
     return null;
+  }
+  if (onUsage && data.usage) {
+    onUsage({ input: data.usage.input_tokens || 0, output: data.usage.output_tokens || 0,
+      searches: (data.usage.server_tool_use && data.usage.server_tool_use.web_search_requests) || 0 });
   }
   const textBlocks = (data.content || []).filter(b => b.type === 'text').map(b => b.text);
   return textBlocks.join('\n').trim();
@@ -1048,11 +1214,13 @@ async function askClaudeCore(history, question, contextBlock, { images, examText
   const cfg = await getSettings();
   const tools = cfg.searchMode === 'acervo' ? undefined
     : [{ type: 'web_search_20250305', name: 'web_search', max_uses: cfg.searchMode === 'acervo_web' ? 2 : 5 }];
+  let usage = null;
   const raw = await callClaude({
     system: buildSystemPrompt(cfg),
     messages,
     tools,
-    maxTokens: 2000
+    maxTokens: 2000,
+    onUsage: u => { usage = u; }
   });
 
   if (raw === null) {
@@ -1067,7 +1235,7 @@ async function askClaudeCore(history, question, contextBlock, { images, examText
     tier = t === 'ACERVO' ? 'acervo' : t === 'SEM_COBERTURA' ? 'sem_cobertura' : 'fallback';
     answer = raw.slice(0, tagMatch.index).trim();
   }
-  return { answer, tier };
+  return { answer, tier, usage };
 }
 
 // Versão com memória de sessão simples (retaguarda sem banco de dados, e usada pelo WhatsApp).
@@ -1099,8 +1267,14 @@ app.post('/api/ask', requireStudentApi, async (req, res) => {
     const safeExamTexts = Array.isArray(examTexts) ? examTexts.slice(0, 5) : [];
     const finalQuestion = question || 'Interprete o(s) exame(s) anexado(s).';
 
+    // Cota do plano: confere antes de gastar com a IA.
+    const isExam = safeImages.length > 0 || safeExamTexts.length > 0;
+    const quota = await checkQuota(req.student.studentId, isExam);
+    if (!quota.ok) return res.status(429).json(quotaPayload(quota));
+    const planChunks = quota.info && quota.info.limits.chunks ? quota.info.limits.chunks : 5;
+
     const docs = await loadDocs();
-    const topChunks = await retrieveContext(finalQuestion, docs);
+    const topChunks = await retrieveContext(finalQuestion, docs, planChunks);
     const contextBlock = topChunks.map(c => `[Fonte: ${c.source}]\n${c.text}`).join('\n\n---\n\n');
     const sources = [...new Set(topChunks.map(c => c.source))];
     const sourceDocIds = [...new Set(topChunks.map(c => c.docId))];
@@ -1126,7 +1300,11 @@ app.post('/api/ask', requireStudentApi, async (req, res) => {
       result = await askClaude(req.student, finalQuestion, contextBlock, { images: safeImages, examTexts: safeExamTexts });
     }
 
-    res.json({ answer: result.answer, sources: result.tier === 'acervo' ? sources : [], tier: result.tier });
+    if (result.tier !== 'erro') {
+      await recordUsage(req.student.studentId, { isExam, useFreeHook: quota.useFreeHook, channel: 'web', tier: result.tier, usage: result.usage });
+    }
+    const usage = usageSummary(await getUsageInfo(req.student.studentId));
+    res.json({ answer: result.answer, sources: result.tier === 'acervo' ? sources : [], tier: result.tier, usage });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Erro interno' });
@@ -1136,7 +1314,9 @@ app.post('/api/ask', requireStudentApi, async (req, res) => {
 // ---------- Conversas salvas do aluno (histórico persistente, como no Claude) ----------
 
 app.get('/api/conversations', requireStudentApi, async (req, res) => {
-  res.json(await listConversations(req.student.studentId));
+  let days = 0;
+  try { const info = await getUsageInfo(req.student.studentId); days = info ? info.limits.historyDays : 0; } catch (e) {}
+  res.json(await listConversations(req.student.studentId, days));
 });
 
 app.post('/api/conversations', requireStudentApi, async (req, res) => {
@@ -1270,6 +1450,9 @@ app.get('/api/admin/overview', requireAdmin, async (req, res) => {
       ]);
       out.questions.last7d = q.rows[0].d7; out.questions.last30d = q.rows[0].d30;
       out.questions.uncovered = u.rows[0].c;
+      const w = monthWindow();
+      const cost = await pool.query('SELECT COALESCE(SUM(cost_usd),0)::float AS c FROM usage_events WHERE created_at >= $1 AND created_at < $2', [w.start, w.end]);
+      out.costMonthUsd = cost.rows[0].c;
       const tm = Object.fromEntries(t.rows.map(r => [r.tier, r.c]));
       const tot = (tm.acervo || 0) + (tm.fallback || 0) + (tm.sem_cobertura || 0);
       out.questions.acervoShare = tot ? Math.round(100 * (tm.acervo || 0) / tot) : null;
@@ -1294,22 +1477,77 @@ app.delete('/api/admin/doses/:id', requireAdmin, async (req, res) => {
 
 function publicStudentFields(s) {
   return { id: s.id, name: s.name, email: s.email, phone: s.phone || '', passwordSet: s.passwordSet,
-    lastLogin: s.lastLogin || null, loginCount: s.loginCount || 0, createdAt: s.createdAt || null };
+    lastLogin: s.lastLogin || null, loginCount: s.loginCount || 0, createdAt: s.createdAt || null,
+    plan: s.plan || 'mentoria', freeExamsUsed: s.freeExamsUsed || 0 };
 }
 
-app.get('/api/admin/students', requireAdmin, async (req, res) => {
+// Lista de alunos com o uso do mês (perguntas, exames e custo estimado).
+async function studentsWithUsage() {
   const students = (await loadStudents()).map(publicStudentFields);
-  res.json(students);
+  if (!useDb) return students;
+  const w = monthWindow();
+  const { rows } = await pool.query(
+    `SELECT student_id,
+       COUNT(*) FILTER (WHERE kind='question')::int AS q,
+       COUNT(*) FILTER (WHERE kind IN ('exam','exam_free'))::int AS e,
+       COALESCE(SUM(cost_usd),0)::float AS cost
+     FROM usage_events WHERE created_at >= $1 AND created_at < $2 GROUP BY student_id`, [w.start, w.end]);
+  const map = Object.fromEntries(rows.map(r => [r.student_id, r]));
+  return students.map(s => ({ ...s, monthQuestions: (map[s.id] || {}).q || 0, monthExams: (map[s.id] || {}).e || 0, monthCostUsd: (map[s.id] || {}).cost || 0 }));
+}
+app.get('/api/admin/students', requireAdmin, async (req, res) => {
+  res.json(await studentsWithUsage());
+});
+
+// Trocar o plano de um aluno.
+app.post('/api/admin/students/:id/plan', requireAdmin, async (req, res) => {
+  const plan = req.body && req.body.plan;
+  if (!PLAN_KEYS.includes(plan)) return res.status(400).json({ error: 'Plano inválido.' });
+  if (useDb) await pool.query('UPDATE students SET plan=$1 WHERE id=$2', [plan, req.params.id]);
+  res.json(await studentsWithUsage());
+});
+
+// Relatório do mês: custo estimado total, por plano e por aluno.
+app.get('/api/admin/billing', requireAdmin, async (req, res) => {
+  try {
+    const cfg = await getSettings();
+    const usdBrl = parseFloat(cfg.usdBrl);
+    if (!useDb) return res.json({ dbEnabled: false });
+    const w = monthWindow();
+    const [tot, byPlan, top, byChannel] = await Promise.all([
+      pool.query(`SELECT COUNT(*) FILTER (WHERE kind='question')::int AS q, COUNT(*) FILTER (WHERE kind IN ('exam','exam_free'))::int AS e,
+                  COALESCE(SUM(cost_usd),0)::float AS cost,
+                  COALESCE(AVG(cost_usd) FILTER (WHERE kind='question'),0)::float AS avg_q,
+                  COALESCE(AVG(cost_usd) FILTER (WHERE kind IN ('exam','exam_free')),0)::float AS avg_e
+                  FROM usage_events WHERE created_at >= $1 AND created_at < $2`, [w.start, w.end]),
+      pool.query(`SELECT COALESCE(s.plan,'mentoria') AS plan, COUNT(DISTINCT s.id)::int AS users,
+                  COUNT(u.id) FILTER (WHERE u.kind='question')::int AS q, COUNT(u.id) FILTER (WHERE u.kind IN ('exam','exam_free'))::int AS e,
+                  COALESCE(SUM(u.cost_usd),0)::float AS cost
+                  FROM students s LEFT JOIN usage_events u ON u.student_id=s.id AND u.created_at >= $1 AND u.created_at < $2
+                  GROUP BY COALESCE(s.plan,'mentoria')`, [w.start, w.end]),
+      pool.query(`SELECT s.name, s.email, COALESCE(s.plan,'mentoria') AS plan, COUNT(*)::int AS n, SUM(u.cost_usd)::float AS cost
+                  FROM usage_events u JOIN students s ON s.id=u.student_id WHERE u.created_at >= $1 AND u.created_at < $2
+                  GROUP BY s.id ORDER BY cost DESC LIMIT 10`, [w.start, w.end]),
+      pool.query(`SELECT COALESCE(channel,'web') AS channel, COUNT(*)::int AS n, COALESCE(SUM(cost_usd),0)::float AS cost
+                  FROM usage_events WHERE created_at >= $1 AND created_at < $2 GROUP BY COALESCE(channel,'web')`, [w.start, w.end])
+    ]);
+    const t = tot.rows[0];
+    res.json({
+      dbEnabled: true, usdBrl, monthStart: w.start, monthEnd: w.end,
+      totals: { questions: t.q, exams: t.e, costUsd: t.cost, avgQuestionUsd: t.avg_q, avgExamUsd: t.avg_e },
+      byPlan: byPlan.rows, topStudents: top.rows, byChannel: byChannel.rows
+    });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'billing' }); }
 });
 
 app.post('/api/admin/students', requireAdmin, async (req, res) => {
-  const { name, email, phone } = req.body;
+  const { name, email, phone, plan } = req.body;
   if (!name || !email) return res.status(400).json({ error: 'name e email são obrigatórios' });
   if (!email.includes('@')) return res.status(400).json({ error: 'E-mail inválido.' });
   try {
     await inviteStudent(name, email, phone);
-    const students = (await loadStudents()).map(publicStudentFields);
-    res.json(students);
+    if (useDb && PLAN_KEYS.includes(plan)) await pool.query('UPDATE students SET plan=$1 WHERE email=$2', [plan, email.trim().toLowerCase()]);
+    res.json(await studentsWithUsage());
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -1325,15 +1563,13 @@ app.post('/api/admin/students/:id/phone', requireAdmin, async (req, res) => {
     const student = students.find(s => s.id === req.params.id);
     if (student) { student.phone = phoneNorm; saveStudentsFile(students); }
   }
-  const students = (await loadStudents()).map(publicStudentFields);
-  res.json(students);
+  res.json(await studentsWithUsage());
 });
 
 app.post('/api/admin/students/:id/reset', requireAdmin, async (req, res) => {
   try {
     await resetStudentPassword(req.params.id);
-    const students = (await loadStudents()).map(publicStudentFields);
-    res.json(students);
+    res.json(await studentsWithUsage());
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -1341,8 +1577,7 @@ app.post('/api/admin/students/:id/reset', requireAdmin, async (req, res) => {
 
 app.delete('/api/admin/students/:id', requireAdmin, async (req, res) => {
   await deleteStudent(req.params.id);
-  const students = (await loadStudents()).map(publicStudentFields);
-  res.json(students);
+  res.json(await studentsWithUsage());
 });
 
 // ---------- WhatsApp ----------
@@ -1444,6 +1679,13 @@ app.post('/webhook', async (req, res) => {
       return;
     }
 
+    // Plano: o WhatsApp só está disponível nos planos que o incluem.
+    const waInfo = await getUsageInfo(student.id);
+    if (waInfo && !waInfo.limits.whatsapp) {
+      await sendWhatsAppMessage(message.from, `O WhatsApp faz parte do plano Assinante ou Mentoria. Seu plano atual é ${waInfo.planLabel}.` + (waInfo.upgradeUrl ? ` Conheça: ${waInfo.upgradeUrl}` : ' Você continua podendo usar o app pela web.'));
+      return;
+    }
+
     let question = null;
     let images = [];
     let examTexts = [];
@@ -1472,13 +1714,22 @@ app.post('/webhook', async (req, res) => {
       return; // outros tipos (áudio, figurinha, etc.) são ignorados por ora
     }
 
+    const waIsExam = images.length > 0 || examTexts.length > 0;
+    const waQuota = await checkQuota(student.id, waIsExam);
+    if (!waQuota.ok) {
+      await sendWhatsAppMessage(message.from, waQuota.message + (waQuota.upgradeUrl ? ` Para continuar agora: ${waQuota.upgradeUrl}` : ''));
+      return;
+    }
     const docs = await loadDocs();
-    const topChunks = await retrieveContext(question, docs);
+    const topChunks = await retrieveContext(question, docs, waQuota.info && waQuota.info.limits.chunks ? waQuota.info.limits.chunks : 5);
     const contextBlock = topChunks.map(c => `[Fonte: ${c.source}]\n${c.text}`).join('\n\n---\n\n');
     if (!whatsappSessions.has(message.from)) whatsappSessions.set(message.from, { history: [] });
     const waSession = whatsappSessions.get(message.from);
-    const { answer } = await askClaude(waSession, question, contextBlock, { images, examTexts });
-    await sendWhatsAppMessage(message.from, toWhatsAppFormatting(answer));
+    const waResult = await askClaude(waSession, question, contextBlock, { images, examTexts });
+    if (waResult.tier !== 'erro') {
+      await recordUsage(student.id, { isExam: waIsExam, useFreeHook: waQuota.useFreeHook, channel: 'whatsapp', tier: waResult.tier, usage: waResult.usage });
+    }
+    await sendWhatsAppMessage(message.from, toWhatsAppFormatting(waResult.answer));
   } catch (err) {
     console.error('Erro ao processar mensagem do WhatsApp:', err);
   }
