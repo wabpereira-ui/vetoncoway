@@ -301,6 +301,11 @@
           <b>Foto da mentora</b><div class="status" style="margin:2px 0 8px;">Aparece no login. Quadrada, rosto centralizado.</div>
           <label class="upload-btn">Enviar<input type="file" accept="image/png,image/jpeg,image/webp" style="display:none" onchange="uploadAsset('photo', this, 400)"></label>
           <button class="lnk" onclick="removeAsset('photo')">remover</button></div></div>
+        <div class="img-row"><div class="img-prev"><img id="prev-icon512" alt="" style="display:block"></div><div>
+          <b>Ícone do app (celular)</b><div class="status" style="margin:2px 0 8px;">É o ícone que aparece na tela inicial quando a pessoa instala o app. Sem ícone enviado, usamos um padrão.</div>
+          <button class="lnk" style="margin-left:0" onclick="makeIconFromLogo()">✨ gerar a partir do logotipo</button>
+          <label class="upload-btn">Enviar outro<input type="file" accept="image/png" style="display:none" onchange="uploadIcon(this)"></label>
+          <button class="lnk" onclick="removeIcon()">voltar ao padrão</button></div></div>
         <div class="status" id="assetStatus"></div>
       </div>
 
@@ -992,6 +997,41 @@ async function removeAsset(key){
   if(!confirm('Remover esta imagem?')) return;
   await fetch('/api/admin/assets/' + key, { method:'DELETE' }); loadAppearance();
 }
+async function postIcons(src){
+  for(const n of [512,192]){
+    const c = document.createElement('canvas'); c.width = c.height = n; src(c.getContext('2d'), n);
+    await postAsset('icon'+n, c.toDataURL('image/png'));
+  }
+}
+async function makeIconFromLogo(){
+  const st = document.getElementById('assetStatus'); const img = document.getElementById('prev-logo');
+  if(!img.src || img.style.display === 'none'){ st.textContent = 'Envie um logotipo primeiro.'; return; }
+  st.textContent = 'Gerando ícone...';
+  try{
+    const bg = document.getElementById('apPrimary').value || '#1B2A41';
+    await postIcons((x, n) => {
+      x.fillStyle = bg; x.fillRect(0, 0, n, n);
+      const box = n * 0.56, k = Math.min(box / img.naturalWidth, box / img.naturalHeight);
+      const w = img.naturalWidth * k, h = img.naturalHeight * k;
+      x.drawImage(img, (n - w) / 2, (n - h) / 2, w, h);
+    });
+    st.textContent = 'Ícone gerado ✓'; loadAppearance();
+  }catch(e){ st.textContent = e.message || 'Não consegui gerar o ícone.'; }
+}
+async function uploadIcon(input){
+  const st = document.getElementById('assetStatus'); const f = input.files[0]; if(!f) return;
+  st.textContent = 'Enviando...';
+  try{
+    const img = new Image(); img.src = await fileToDataUrl(f, 1024); await img.decode();
+    await postIcons((x, n) => { x.drawImage(img, 0, 0, n, n); });
+    st.textContent = 'Ícone enviado ✓'; loadAppearance();
+  }catch(e){ st.textContent = e.message || 'Falha no envio.'; }
+  input.value = '';
+}
+async function removeIcon(){
+  if(!confirm('Voltar ao ícone padrão?')) return;
+  await fetch('/api/admin/assets/icon512', { method:'DELETE' }); await fetch('/api/admin/assets/icon192', { method:'DELETE' }); loadAppearance();
+}
 // Sugere cores a partir do logo: pega as cores mais presentes e saturadas, ignorando branco, cinza e transparente.
 async function suggestColors(){
   const img = document.getElementById('prev-logo'); const hint = document.getElementById('colorHint');
@@ -1026,6 +1066,7 @@ async function loadAppearance(){
   [['logo','logo'],['logoLight','logoLight'],['photo','photo']].forEach(([k,f])=>{
     const el = document.getElementById('prev-'+k); if(b[f]){ el.src = b[f]; el.style.display = 'block'; } else { el.removeAttribute('src'); el.style.display = 'none'; }
   });
+  document.getElementById('prev-icon512').src = '/brand/icon512?v=' + Date.now();
   document.getElementById('apPrimary').value = s.primaryColor;
   document.getElementById('apAccent').value = s.accentColor;
   document.getElementById('apFont').value = s.fontHeading;
