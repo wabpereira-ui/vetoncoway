@@ -45,6 +45,14 @@
   textarea{ min-height:140px; resize:vertical; }
   .btn{ font-family:'IBM Plex Mono',monospace; font-size:12.5px; letter-spacing:.5px; text-transform:uppercase; background:var(--sage-dark); color:#fff; border:none; border-radius:3px; padding:10px 16px; cursor:pointer; }
   .btn:hover{ background:var(--navy); }
+  select{ width:100%; font-family:'IBM Plex Sans',sans-serif; font-size:14px; padding:10px 12px; border:1px solid var(--line); border-radius:3px; margin-bottom:10px; background:#fff; }
+  input[type=color]{ width:64px; height:40px; padding:2px; border:1px solid var(--line); border-radius:3px; background:#fff; cursor:pointer; }
+  .img-row{ display:flex; gap:16px; align-items:center; padding:12px 0; border-bottom:1px solid var(--line); }
+  .img-row:last-of-type{ border-bottom:none; }
+  .img-prev{ width:120px; height:70px; border:1px dashed var(--line); display:flex; align-items:center; justify-content:center; background:#fff; flex-shrink:0; overflow:hidden; }
+  .img-prev.dark{ background:#223449; } .img-prev.round{ width:70px; border-radius:50%; }
+  .img-prev img{ max-width:100%; max-height:100%; object-fit:contain; } .img-prev.round img{ width:100%; height:100%; object-fit:cover; }
+  button.lnk{ background:none; border:none; color:var(--sage-dark); font-size:12px; cursor:pointer; text-decoration:underline; margin-left:8px; font-family:'IBM Plex Sans',sans-serif; }
   label.fl{ display:block; font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:1px; text-transform:uppercase; color:var(--ink-soft); margin-bottom:4px; }
   label.radio{ display:block; font-size:13.5px; line-height:1.45; padding:8px 0; cursor:pointer; }
   label.radio input{ margin-right:6px; }
@@ -61,6 +69,7 @@
       <button class="tab" id="tabBtn-triagem" onclick="showPage('triagem')">🔎 Triagem Oncoway</button>
       <button class="tab" id="tabBtn-alunos" onclick="showPage('alunos')">🎓 Alunos</button>
       <button class="tab" id="tabBtn-atividade" onclick="showPage('atividade')">📊 Atividade</button>
+      <button class="tab" id="tabBtn-aparencia" onclick="showPage('aparencia')">🎨 Aparência</button>
       <button class="tab" id="tabBtn-config" onclick="showPage('config')">⚙️ Configurações</button>
     </div>
   </div>
@@ -158,6 +167,61 @@
       </div>
     </div>
 
+    <!-- ABA: APARÊNCIA -->
+    <div class="page" id="page-aparencia">
+      <h2>Logotipos e foto</h2>
+      <div class="panel">
+        <div class="img-row"><div class="img-prev"><img id="prev-logo" alt=""></div><div>
+          <b>Logotipo</b><div class="status" style="margin:2px 0 8px;">Aparece no login e no menu lateral. PNG com fundo transparente ou SVG funcionam melhor.</div>
+          <label class="upload-btn">Enviar<input type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" style="display:none" onchange="uploadAsset('logo', this, 600)"></label>
+          <button class="lnk" onclick="removeAsset('logo')">remover</button>
+          <button class="lnk" onclick="suggestColors()">🎨 sugerir cores a partir deste logo</button></div></div>
+        <div class="img-row"><div class="img-prev dark"><img id="prev-logoLight" alt=""></div><div>
+          <b>Logotipo branco (opcional)</b><div class="status" style="margin:2px 0 8px;">Para fundos escuros. Reservado para uso futuro.</div>
+          <label class="upload-btn">Enviar<input type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" style="display:none" onchange="uploadAsset('logoLight', this, 600)"></label>
+          <button class="lnk" onclick="removeAsset('logoLight')">remover</button></div></div>
+        <div class="img-row"><div class="img-prev round"><img id="prev-photo" alt=""></div><div>
+          <b>Foto da mentora</b><div class="status" style="margin:2px 0 8px;">Aparece no login. Quadrada, rosto centralizado.</div>
+          <label class="upload-btn">Enviar<input type="file" accept="image/png,image/jpeg,image/webp" style="display:none" onchange="uploadAsset('photo', this, 400)"></label>
+          <button class="lnk" onclick="removeAsset('photo')">remover</button></div></div>
+        <div class="status" id="assetStatus"></div>
+      </div>
+
+      <h2>Cores e layout</h2>
+      <div class="panel">
+        <div style="display:flex; gap:20px; flex-wrap:wrap; margin-bottom:12px;">
+          <div><label class="fl">Cor principal (títulos, mensagens)</label><input type="color" id="apPrimary"></div>
+          <div><label class="fl">Cor de destaque (botões, selos)</label><input type="color" id="apAccent"></div>
+        </div>
+        <div class="status" id="colorHint" style="margin-top:-2px;"></div>
+        <label class="fl" style="margin-top:12px;">Fonte dos títulos</label>
+        <select id="apFont"><option value="serif">Serifada (editorial)</option><option value="sans">Sem serifa (moderna)</option></select>
+        <label class="fl">Cantos</label>
+        <select id="apRadius"><option value="reto">Retos (sóbrio)</option><option value="suave">Suaves</option><option value="redondo">Arredondados</option></select>
+        <label class="fl">Cartões de entrada na tela inicial</label>
+        <select id="apCards"><option value="sim">Mostrar</option><option value="nao">Ocultar</option></select>
+        <label class="fl">Links rápidos no menu (até 6, um por linha: Nome | https://link)</label>
+        <textarea id="apLinks" style="min-height:90px;" placeholder="Mentoria Oncoway | https://vetjoicefaria.com/mentoria/&#10;YouTube | https://youtube.com/..."></textarea>
+        <button class="btn" onclick="saveAppearance()">Salvar aparência</button>
+        <div class="status" id="apStatus"></div>
+      </div>
+
+      <h2>Banners</h2>
+      <div class="panel">
+        <div class="status" style="margin:0 0 10px;">Faixas de destaque no topo do app do aluno (imersão, curso novo, comunidade). O aluno pode fechar cada uma.</div>
+        <label class="fl">Título</label><input type="text" id="bnTitle" maxlength="120">
+        <label class="fl">Texto curto</label><input type="text" id="bnBody" maxlength="400">
+        <label class="fl">Link (https://…)</label><input type="text" id="bnUrl">
+        <label class="fl">Texto do botão</label><input type="text" id="bnLabel" maxlength="40" placeholder="Saiba mais">
+        <label class="upload-btn">Imagem (opcional)<input type="file" id="bnFile" accept="image/png,image/jpeg,image/webp" style="display:none" onchange="document.getElementById('bnFileName').textContent=this.files[0]?this.files[0].name:''"></label>
+        <span class="status" id="bnFileName"></span><br>
+        <button class="btn" onclick="addBanner()">Publicar banner</button>
+        <div class="status" id="bnStatus"></div>
+      </div>
+      <h2>Banners publicados</h2>
+      <div id="bannerList"></div>
+    </div>
+
     <!-- ABA: CONFIGURAÇÕES -->
     <div class="page" id="page-config">
       <h2>Identidade do app</h2>
@@ -195,13 +259,14 @@ if(window['pdfjsLib']){
 function escapeHtml(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 function showPage(name){
-  ['acervo','triagem','alunos','atividade','config'].forEach(p=>{
+  ['acervo','triagem','alunos','atividade','aparencia','config'].forEach(p=>{
     document.getElementById('page-'+p).classList.toggle('active', p===name);
     document.getElementById('tabBtn-'+p).classList.toggle('active', p===name);
   });
   try{ localStorage.setItem('oncoway_admin_tab', name); }catch(e){}
   if(name === 'atividade') loadAnalytics();
   if(name === 'config') loadConfig();
+  if(name === 'aparencia') loadAppearance();
 }
 
 async function loadDocs(){
@@ -582,6 +647,124 @@ async function saveConfig(){
   else st.textContent = d.error || 'Erro ao salvar.';
 }
 function resetConfig(){ if(cfgDefaults && confirm('Restaurar os textos e o modo padrão? Clique em Salvar depois.')) fillConfig(cfgDefaults); }
+
+// ---------- Aparência ----------
+function fileToDataUrl(file, maxDim){
+  return new Promise((resolve, reject)=>{
+    if(file.type === 'image/svg+xml'){
+      const fr = new FileReader(); fr.onload = ()=>resolve(fr.result); fr.onerror = reject; fr.readAsDataURL(file); return;
+    }
+    const url = URL.createObjectURL(file); const img = new Image();
+    img.onload = ()=>{
+      const k = Math.min(1, maxDim / Math.max(img.width, img.height));
+      const c = document.createElement('canvas'); c.width = Math.round(img.width*k); c.height = Math.round(img.height*k);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      // PNG preserva transparência (logos); fotos e banners viram JPEG, mais leve.
+      resolve(file.type === 'image/png' ? c.toDataURL('image/png') : c.toDataURL('image/jpeg', 0.85));
+    };
+    img.onerror = ()=>reject(new Error('Não consegui abrir a imagem.'));
+    img.src = url;
+  });
+}
+async function postAsset(key, dataUrl){
+  const res = await fetch('/api/admin/assets/' + key, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ dataUrl }) });
+  const d = await res.json().catch(()=>({}));
+  if(!res.ok) throw new Error(d.error || 'Falha no envio.');
+}
+async function uploadAsset(key, input, maxDim){
+  const st = document.getElementById('assetStatus'); const f = input.files[0]; if(!f) return;
+  st.textContent = 'Enviando...';
+  try{ await postAsset(key, await fileToDataUrl(f, maxDim)); st.textContent = 'Enviado ✓'; await loadAppearance(); if(key==='logo') suggestColors(); }
+  catch(e){ st.textContent = e.message; }
+  input.value = '';
+}
+async function removeAsset(key){
+  if(!confirm('Remover esta imagem?')) return;
+  await fetch('/api/admin/assets/' + key, { method:'DELETE' }); loadAppearance();
+}
+// Sugere cores a partir do logo: pega as cores mais presentes e saturadas, ignorando branco, cinza e transparente.
+async function suggestColors(){
+  const img = document.getElementById('prev-logo'); const hint = document.getElementById('colorHint');
+  if(!img.src || img.style.display === 'none'){ hint.textContent = 'Envie um logotipo primeiro.'; return; }
+  try{
+    const c = document.createElement('canvas'); const w = 96; c.width = w; c.height = Math.max(1, Math.round(w * img.naturalHeight / img.naturalWidth));
+    const x = c.getContext('2d'); x.drawImage(img, 0, 0, c.width, c.height);
+    const px = x.getImageData(0, 0, c.width, c.height).data; const bins = {};
+    for(let i=0;i<px.length;i+=4){
+      const [r,g,b,a] = [px[i],px[i+1],px[i+2],px[i+3]]; if(a < 200) continue;
+      const mx = Math.max(r,g,b), mn = Math.min(r,g,b), sat = mx ? (mx-mn)/mx : 0;
+      if(sat < 0.25 || mx > 245) continue;
+      const k = (r>>4)+','+(g>>4)+','+(b>>4); const o = bins[k] || (bins[k] = { n:0, r:0, g:0, b:0, sat:0 });
+      o.n++; o.r+=r; o.g+=g; o.b+=b; o.sat+=sat;
+    }
+    const list = Object.values(bins).map(o=>({ r:Math.round(o.r/o.n), g:Math.round(o.g/o.n), b:Math.round(o.b/o.n), score:o.n*(o.sat/o.n+0.3) })).sort((a,b)=>b.score-a.score);
+    if(!list.length){ hint.textContent = 'O logo não tem cores marcantes; escolha as cores manualmente.'; return; }
+    const hex = o => '#'+[o.r,o.g,o.b].map(v=>v.toString(16).padStart(2,'0')).join('');
+    const lum = o => 0.299*o.r+0.587*o.g+0.114*o.b;
+    const main = list[0]; const dark = list.slice(0,6).sort((a,b)=>lum(a)-lum(b))[0];
+    document.getElementById('apAccent').value = hex(main);
+    document.getElementById('apPrimary').value = hex(lum(dark) < 120 ? dark : { r:Math.round(main.r*.45), g:Math.round(main.g*.45), b:Math.round(main.b*.45) });
+    hint.textContent = 'Cores sugeridas a partir do logo. Ajuste se quiser e clique em Salvar aparência.';
+  }catch(e){ hint.textContent = 'Não consegui ler as cores deste logo.'; }
+}
+function parseLinks(txt){
+  return txt.split('\n').map(l=>l.split('|')).map(p=>({ label:(p[0]||'').trim(), url:(p[1]||'').trim() })).filter(l=>l.label&&l.url).slice(0,6);
+}
+async function loadAppearance(){
+  const [bres, sres, ares] = await Promise.all([fetch('/api/branding'), fetch('/api/admin/settings'), fetch('/api/admin/banners')]);
+  const b = await bres.json(); const s = (await sres.json()).settings; const banners = await ares.json();
+  [['logo','logo'],['logoLight','logoLight'],['photo','photo']].forEach(([k,f])=>{
+    const el = document.getElementById('prev-'+k); if(b[f]){ el.src = b[f]; el.style.display = 'block'; } else { el.removeAttribute('src'); el.style.display = 'none'; }
+  });
+  document.getElementById('apPrimary').value = s.primaryColor;
+  document.getElementById('apAccent').value = s.accentColor;
+  document.getElementById('apFont').value = s.fontHeading;
+  document.getElementById('apRadius').value = s.radius;
+  document.getElementById('apCards').value = s.showEntryCards;
+  document.getElementById('apLinks').value = JSON.parse(s.quickLinks).map(l=>l.label+' | '+l.url).join('\n');
+  document.getElementById('bannerList').innerHTML = banners.length ? banners.map(x=>`
+    <div class="doc-card" style="padding-right:150px;">
+      <div class="doc-name">${escapeHtml(x.title||'(sem título)')}</div>
+      <div class="doc-meta">${x.active===false?'OCULTO':'VISÍVEL'}${x.link_url?' · '+escapeHtml(x.link_url):''}${x.image?' · com imagem':''}</div>
+      <button style="right:70px;color:var(--sage-dark);" onclick="toggleBanner('${x.id}', ${x.active===false})">${x.active===false?'mostrar':'ocultar'}</button>
+      <button onclick="removeBanner('${x.id}')">excluir</button>
+    </div>`).join('') : '<div class="status">Nenhum banner ainda.</div>';
+  window._banners = banners;
+}
+async function saveAppearance(){
+  const st = document.getElementById('apStatus'); st.textContent = 'Salvando...';
+  const body = { primaryColor: document.getElementById('apPrimary').value, accentColor: document.getElementById('apAccent').value,
+    fontHeading: document.getElementById('apFont').value, radius: document.getElementById('apRadius').value,
+    showEntryCards: document.getElementById('apCards').value, quickLinks: JSON.stringify(parseLinks(document.getElementById('apLinks').value)) };
+  const res = await fetch('/api/admin/settings', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  st.textContent = res.ok ? 'Salvo ✓ (os alunos veem ao recarregar a página; pode levar até 1 minuto)' : 'Erro ao salvar.';
+}
+async function addBanner(){
+  const st = document.getElementById('bnStatus'); const title = document.getElementById('bnTitle').value.trim();
+  if(!title){ st.textContent = 'Informe um título.'; return; }
+  st.textContent = 'Publicando...';
+  try{
+    const res = await fetch('/api/admin/banners', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({
+      title, body: document.getElementById('bnBody').value, link_url: document.getElementById('bnUrl').value,
+      link_label: document.getElementById('bnLabel').value, active: true, position: (window._banners||[]).length }) });
+    const d = await res.json(); if(!res.ok) throw new Error('Erro ao salvar.');
+    const f = document.getElementById('bnFile').files[0];
+    if(f) await postAsset(d.banner.id, await fileToDataUrl(f, 900));
+    ['bnTitle','bnBody','bnUrl','bnLabel'].forEach(i=>document.getElementById(i).value='');
+    document.getElementById('bnFile').value=''; document.getElementById('bnFileName').textContent='';
+    st.textContent = 'Publicado ✓'; loadAppearance();
+  }catch(e){ st.textContent = e.message; }
+}
+async function toggleBanner(id, makeActive){
+  const b = (window._banners||[]).find(x=>x.id===id); if(!b) return;
+  await fetch('/api/admin/banners', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ ...b, active: makeActive }) });
+  loadAppearance();
+}
+async function removeBanner(id){
+  if(!confirm('Excluir este banner?')) return;
+  await fetch('/api/admin/banners/' + id, { method:'DELETE' }); loadAppearance();
+}
 
 // Lembra a última aba usada
 try{
