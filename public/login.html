@@ -44,6 +44,12 @@
   button:hover{ background:var(--navy); }
   .error{ color:var(--alert); font-size:12.5px; margin-top:12px; text-align:center; min-height:16px; }
   .hint{ font-size:12px; color:var(--ink-soft); margin:-8px 0 16px; line-height:1.4; }
+  .lnk{ background:none; border:none; color:var(--sage-dark); text-decoration:underline; text-transform:none; font-family:'IBM Plex Sans',sans-serif; font-size:12.5px; letter-spacing:0; padding:4px 0; width:auto; cursor:pointer; }
+  .lnk:hover{ background:none; color:var(--navy); }
+  .ok{ color:var(--sage-dark); font-size:12.5px; margin-top:12px; text-align:center; min-height:16px; line-height:1.4; }
+  .chk{ display:flex; gap:8px; align-items:flex-start; font-size:12.5px; line-height:1.4; color:var(--ink-soft); margin:0 0 16px; text-transform:none; letter-spacing:0; font-family:'IBM Plex Sans',sans-serif; }
+  .chk input{ width:auto; margin:3px 0 0; }
+  .hp{ position:absolute; left:-9999px; width:1px; height:1px; opacity:0; }
   .form{ display:none; }
   .form.active{ display:block; }
 </style>
@@ -58,6 +64,7 @@
     <div class="tabs">
       <div class="tab active" id="tabLogin" onclick="showForm('login')">Entrar</div>
       <div class="tab" id="tabRegister" onclick="showForm('register')">Primeiro acesso</div>
+      <div class="tab" id="tabSignup" onclick="showForm('signup')" style="display:none;">Criar conta</div>
     </div>
 
     <form class="form active" id="loginForm" onsubmit="return doLogin(event)">
@@ -67,6 +74,34 @@
       <input id="loginPassword" type="password" autocomplete="current-password" required>
       <button type="submit">Entrar</button>
       <div class="error" id="loginError"></div>
+      <div style="text-align:center;"><button type="button" class="lnk" onclick="showForm('forgot')">Esqueci minha senha</button>
+      <button type="button" class="lnk" id="resendBtn" style="display:none;" onclick="resendVerification()">Reenviar e-mail de confirmação</button></div>
+      <div class="ok" id="loginOk"></div>
+    </form>
+
+    <form class="form" id="forgotForm" onsubmit="return doForgot(event)">
+      <div class="hint">Informe seu e-mail. Se ele estiver cadastrado, enviamos um link para criar uma nova senha.</div>
+      <label for="forgotEmail">E-mail</label>
+      <input id="forgotEmail" type="email" autocomplete="email" required>
+      <button type="submit">Enviar link</button>
+      <div class="error" id="forgotError"></div>
+      <div class="ok" id="forgotOk"></div>
+      <div style="text-align:center;"><button type="button" class="lnk" onclick="showForm('login')">Voltar para entrar</button></div>
+    </form>
+
+    <form class="form" id="signupForm" onsubmit="return doSignup(event)">
+      <div class="hint">Crie sua conta gratuita. Você é aluno da mentoria? Use a aba "Primeiro acesso" com o e-mail que a mentora cadastrou.</div>
+      <label for="suName">Nome</label>
+      <input id="suName" type="text" autocomplete="name" required maxlength="80">
+      <label for="suEmail">E-mail</label>
+      <input id="suEmail" type="email" autocomplete="email" required>
+      <label for="suPassword">Senha (mínimo 8 caracteres)</label>
+      <input id="suPassword" type="password" autocomplete="new-password" required minlength="8">
+      <input class="hp" id="suWebsite" type="text" tabindex="-1" autocomplete="off" aria-hidden="true">
+      <label class="chk"><input id="suTerms" type="checkbox" required><span>Li e aceito os <a href="/termos" target="_blank">termos de uso</a> e a <a href="/privacidade" target="_blank">política de privacidade</a>.</span></label>
+      <button type="submit">Criar conta grátis</button>
+      <div class="error" id="signupError"></div>
+      <div class="ok" id="signupOk"></div>
     </form>
 
     <form class="form" id="registerForm" onsubmit="return doRegister(event)">
@@ -90,15 +125,52 @@
     if(b.primaryColor) root.setProperty('--navy', b.primaryColor);
     if(b.accentColor){ root.setProperty('--sage', b.accentColor); root.setProperty('--sage-dark', dk(b.accentColor,0.25)); }
     if(b.logo){ const e=document.getElementById('bLogo'); e.src=b.logo; e.style.display='block'; document.getElementById('bName').style.display='none'; }
+    if(b.signupOpen){ document.getElementById('tabSignup').style.display = ''; if(location.hash === '#criar-conta') showForm('signup'); }
     if(b.photo){ const e=document.getElementById('bPhoto'); e.src=b.photo; e.style.display='block'; }
     document.getElementById('bEyebrow').textContent = b.mentorName + (b.mentorTitle ? ' · ' + b.mentorTitle : '');
   }catch(e){}
 })();
+const FORMS = { login:'tabLogin', register:'tabRegister', signup:'tabSignup', forgot:null };
 function showForm(which){
-  document.getElementById('tabLogin').classList.toggle('active', which==='login');
-  document.getElementById('tabRegister').classList.toggle('active', which==='register');
-  document.getElementById('loginForm').classList.toggle('active', which==='login');
-  document.getElementById('registerForm').classList.toggle('active', which==='register');
+  Object.keys(FORMS).forEach(k=>{
+    document.getElementById(k+'Form').classList.toggle('active', k===which);
+    if(FORMS[k]) document.getElementById(FORMS[k]).classList.toggle('active', k===which || (which==='forgot' && k==='login'));
+  });
+}
+let lastLoginEmail = '';
+async function postJson(url, body){
+  const res = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  let data = {}; try{ data = await res.json(); }catch(e){}
+  return { res, data };
+}
+async function doSignup(e){
+  e.preventDefault();
+  const err = document.getElementById('signupError'), ok = document.getElementById('signupOk');
+  err.textContent = ''; ok.textContent = '';
+  try{
+    const { res, data } = await postJson('/api/signup', {
+      name: document.getElementById('suName').value.trim(), email: document.getElementById('suEmail').value.trim(),
+      password: document.getElementById('suPassword').value, acceptTerms: document.getElementById('suTerms').checked,
+      website: document.getElementById('suWebsite').value });
+    if(res.ok){ ok.textContent = 'Quase lá! Enviamos um link de confirmação para o seu e-mail. Clique nele para ativar a conta (confira o spam).'; document.getElementById('suPassword').value = ''; }
+    else err.textContent = data.error || 'Não foi possível criar a conta.';
+  }catch(x){ err.textContent = 'Erro de conexão. Tente novamente.'; }
+  return false;
+}
+async function doForgot(e){
+  e.preventDefault();
+  const err = document.getElementById('forgotError'), ok = document.getElementById('forgotOk');
+  err.textContent = ''; ok.textContent = '';
+  try{
+    const { data } = await postJson('/api/forgot', { email: document.getElementById('forgotEmail').value.trim() });
+    ok.textContent = data.message || 'Se o e-mail estiver correto, enviamos as instruções.';
+  }catch(x){ err.textContent = 'Erro de conexão. Tente novamente.'; }
+  return false;
+}
+async function resendVerification(){
+  const ok = document.getElementById('loginOk');
+  try{ const { data } = await postJson('/api/resend-verification', { email: lastLoginEmail }); ok.textContent = data.message || 'Enviamos um novo link.'; }
+  catch(x){ ok.textContent = 'Erro de conexão.'; }
 }
 
 async function doLogin(e){
@@ -113,6 +185,8 @@ async function doLogin(e){
       body: JSON.stringify({ email, password })
     });
     const data = await res.json();
+    lastLoginEmail = email;
+    document.getElementById('resendBtn').style.display = data.needVerify ? 'inline' : 'none';
     if(res.ok){ window.location.href = '/'; }
     else{ errorEl.textContent = data.error || 'Não foi possível entrar.'; }
   }catch(err){ errorEl.textContent = 'Erro de conexão. Tente novamente.'; }

@@ -162,6 +162,7 @@
       <div id="usageBox"></div>
       <div id="quickLinks"></div>
       <span id="welcomeMsg"></span> · <a href="#" onclick="logout(); return false;">sair</a>
+      <div style="margin-top:6px;font-size:11.5px;"><a href="/termos" target="_blank">Termos</a> · <a href="/privacidade" target="_blank">Privacidade</a> · <a href="#" onclick="deleteAccount(); return false;" style="color:var(--alert);">Excluir minha conta</a><span id="supportLine"></span></div>
     </div>
   </div>
 
@@ -341,6 +342,17 @@ function renderUsage(u){
   if(u.upgradeUrl && u.plan !== 'mentoria') h += `<a class="up" href="${escapeHtml(u.upgradeUrl)}" target="_blank" rel="noopener">${u.plan === 'gratis' ? 'Conhecer o plano Assinante' : 'Ver planos'}</a>`;
   box.innerHTML = h;
 }
+async function deleteAccount(){
+  if(!confirm('Excluir sua conta apaga todas as suas conversas e dados, e não pode ser desfeito. Continuar?')) return;
+  const password = prompt('Para confirmar, digite sua senha:');
+  if(!password) return;
+  try{
+    const res = await fetch('/api/me/delete', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ password }) });
+    const d = await res.json().catch(()=>({}));
+    if(res.ok){ alert('Conta excluída.'); window.location.href = '/login.html'; }
+    else alert(d.error || 'Não foi possível excluir a conta.');
+  }catch(e){ alert('Erro de conexão. Tente novamente.'); }
+}
 async function loadUsage(){
   try{ const r = await fetch('/api/me'); if(r.ok){ const d = await r.json(); renderUsage(d.usage); } }catch(e){}
 }
@@ -360,6 +372,7 @@ async function loadBranding(){
     applyTheme(BRAND);
     renderBanners(BRAND.banners || []);
     renderQuickLinks(BRAND.quickLinks || []);
+    if(BRAND.supportEmail) document.getElementById('supportLine').innerHTML = ' · <a href="mailto:' + escapeHtml(BRAND.supportEmail) + '">Contato</a>';
     if(BRAND.logo){ const lg = document.getElementById('brandLogo'); lg.src = BRAND.logo; lg.style.display = 'block'; }
     document.title = BRAND.appName;
     document.getElementById('brandName').textContent = BRAND.appName;
