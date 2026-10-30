@@ -80,6 +80,17 @@
   .msg.assistant .bubble{ background:var(--card); border:1px solid var(--line); border-left:3px solid var(--sage); border-radius:2px; color:var(--ink); padding:16px 20px 14px; }
   .msg.assistant .bubble::before{ content:attr(data-by); display:block; font-family:'IBM Plex Mono',monospace; font-size:10.5px; letter-spacing:1.6px; text-transform:uppercase; color:var(--sage-dark); margin-bottom:8px; }
   .msg.assistant .bubble[data-by='']::before{ display:none; }
+  .usage{ margin:0 0 10px; padding:10px 10px 8px; border:1px solid var(--line); border-radius:var(--r,3px); background:#fff; font-size:12px; color:var(--ink-soft); }
+  .usage .plan{ font-family:'IBM Plex Mono',monospace; font-size:10.5px; letter-spacing:1.4px; text-transform:uppercase; color:var(--sage-dark); margin-bottom:6px; }
+  .usage .row{ display:flex; justify-content:space-between; margin-top:6px; }
+  .usage .bar{ height:5px; background:#E6EAE3; border-radius:3px; overflow:hidden; margin-top:3px; }
+  .usage .bar i{ display:block; height:100%; background:var(--sage); }
+  .usage .bar i.warn{ background:var(--amber); } .usage .bar i.full{ background:var(--alert); }
+  .usage .hint{ margin-top:7px; font-size:11.5px; line-height:1.35; }
+  .usage a.up{ display:block; text-align:center; margin-top:8px; background:var(--sage-dark); color:#fff; text-decoration:none; padding:7px; border-radius:var(--r,3px); font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:.5px; text-transform:uppercase; }
+  .quota-card{ border-left:4px solid var(--amber); background:#FBF6EE; padding:14px 16px; border-radius:var(--r,3px); }
+  .quota-card b{ font-family:'Source Serif 4',serif; color:var(--navy); font-size:16px; display:block; margin-bottom:4px; }
+  .quota-card a.up{ display:inline-block; margin-top:10px; background:var(--sage-dark); color:#fff; text-decoration:none; padding:8px 14px; border-radius:var(--r,3px); font-family:'IBM Plex Mono',monospace; font-size:11.5px; letter-spacing:.5px; text-transform:uppercase; }
   #bannerStrip{ padding:0 24px; }
   .banner{ display:flex; gap:14px; align-items:center; background:var(--card); border:1px solid var(--line); border-left:4px solid var(--sage); border-radius:var(--r,3px); padding:12px 14px; margin-top:12px; position:relative; }
   .banner img{ width:64px; height:64px; object-fit:cover; border-radius:var(--r,3px); flex-shrink:0; }
@@ -148,6 +159,7 @@
     </div>
     <div class="conv-list" id="convList"></div>
     <div class="sidebar-footer">
+      <div id="usageBox"></div>
       <div id="quickLinks"></div>
       <span id="welcomeMsg"></span> · <a href="#" onclick="logout(); return false;">sair</a>
     </div>
@@ -252,6 +264,7 @@ function renderConversationList(list){
   `).join('');
 }
 
+let USAGE = null;
 let BRAND = { appName:'Agente Oncoway', tagline:'', mentorName:'a mentora', mentorTitle:'' };
 function emptyStateHtml(){
   const m = escapeHtml(BRAND.mentorName);
@@ -300,6 +313,42 @@ function renderBanners(list){
 function hideBanner(id){
   try{ const h = JSON.parse(localStorage.getItem('hiddenBanners') || '[]'); h.push(id); localStorage.setItem('hiddenBanners', JSON.stringify(h)); }catch(e){}
   renderBanners(BRAND.banners || []);
+}
+function fmtResetBR(iso){
+  const d = new Date(new Date(iso).getTime() - 3*3600000);
+  const days = Math.max(0, Math.ceil((new Date(iso).getTime() - Date.now()) / 86400000));
+  return { date: String(d.getUTCDate()).padStart(2,'0') + '/' + String(d.getUTCMonth()+1).padStart(2,'0'), days };
+}
+function barHtml(used, limit){
+  const pct = limit > 0 ? Math.min(100, Math.round(100 * used / limit)) : 100;
+  const cls = pct >= 100 ? 'full' : pct >= 80 ? 'warn' : '';
+  return `<div class="bar"><i class="${cls}" style="width:${pct}%"></i></div>`;
+}
+function renderUsage(u){
+  const box = document.getElementById('usageBox');
+  if(!u){ box.innerHTML = ''; return; }
+  USAGE = u;
+  const r = fmtResetBR(u.resetAt);
+  const showQ = u.questions.limit < 1000, showE = u.exams.limit > 0 && u.exams.limit < 1000;
+  let h = `<div class="plan">Plano ${escapeHtml(u.planLabel)}</div>`;
+  if(showQ) h += `<div class="row"><span>Perguntas</span><span>${u.questions.used}/${u.questions.limit}</span></div>${barHtml(u.questions.used, u.questions.limit)}`;
+  if(showE) h += `<div class="row"><span>Exames no mês</span><span>${u.exams.used}/${u.exams.limit}</span></div>${barHtml(u.exams.used, u.exams.limit)}`;
+  if(u.freeExams) h += `<div class="row"><span>Exames grátis (uma vez)</span><span>${u.freeExams.left} de ${u.freeExams.total}</span></div>${barHtml(u.freeExams.total - u.freeExams.left, u.freeExams.total)}`;
+  if(!showQ && !showE && !u.freeExams){ box.innerHTML = h; return; }
+  const nearQ = showQ && u.questions.used >= u.questions.limit * 0.8;
+  const nearE = showE && u.exams.used >= u.exams.limit * 0.8;
+  h += `<div class="hint">${showQ || showE ? `A cota renova em ${r.date} (${r.days} dia${r.days === 1 ? '' : 's'}).` : ''}${(nearQ || nearE) ? ' Você está perto do limite.' : ''}</div>`;
+  if(u.upgradeUrl && u.plan !== 'mentoria') h += `<a class="up" href="${escapeHtml(u.upgradeUrl)}" target="_blank" rel="noopener">${u.plan === 'gratis' ? 'Conhecer o plano Assinante' : 'Ver planos'}</a>`;
+  box.innerHTML = h;
+}
+async function loadUsage(){
+  try{ const r = await fetch('/api/me'); if(r.ok){ const d = await r.json(); renderUsage(d.usage); } }catch(e){}
+}
+function quotaCardHtml(q){
+  const when = '';
+  const title = q.kind === 'exams' ? 'Interpretação de exames' : 'Limite de perguntas do mês';
+  const cta = q.upgradeUrl ? `<a class="up" href="${escapeHtml(q.upgradeUrl)}" target="_blank" rel="noopener">${q.plan === 'gratis' ? 'Conhecer o plano Assinante' : 'Ver opções'}</a>` : '';
+  return `<div class="quota-card"><b>${title}</b>${escapeHtml(q.message || '')}${when}${cta}</div>`;
 }
 function renderQuickLinks(list){
   document.getElementById('quickLinks').innerHTML = list.map(l => `<a href="${escapeHtml(l.url)}" target="_blank" rel="noopener">${escapeHtml(l.label)} ↗</a>`).join('');
@@ -576,6 +625,13 @@ async function sendMessage(){
     if(response.status === 401){ window.location.href = '/login.html'; return; }
     if(response.status === 413){ throw new Error('anexos_grandes'); }
     const data = await response.json();
+    if(response.status === 429 && data.error === 'quota'){
+      thinkingEl.querySelector('.bubble').innerHTML = quotaCardHtml(data);
+      loadUsage();
+      document.getElementById('sendBtn').disabled = false;
+      return;
+    }
+    if(data.usage) renderUsage(data.usage);
     const answer = data.answer || 'Não consegui gerar uma resposta agora. Tente novamente.';
     const usedSources = data.sources || [];
     const tier = data.tier;
@@ -607,6 +663,7 @@ async function sendMessage(){
 }
 
 loadBranding();
+loadUsage();
 loadConversationList();
 </script>
 </body>
