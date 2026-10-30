@@ -2,6 +2,14 @@
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#223449">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/brand/icon512">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Oncoway">
 <title>Agente Oncoway</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -98,6 +106,12 @@
   .banner .bb{ font-size:13px; color:var(--ink-soft); margin-top:2px; line-height:1.4; }
   .banner a.bl{ display:inline-block; margin-top:6px; font-family:'IBM Plex Mono',monospace; font-size:11.5px; letter-spacing:.5px; text-transform:uppercase; color:#fff; background:var(--sage-dark); padding:6px 12px; border-radius:var(--r,3px); text-decoration:none; }
   .banner .bx{ position:absolute; top:4px; right:8px; background:none; border:none; color:var(--ink-soft); cursor:pointer; font-size:14px; }
+  .install{ margin:0 0 10px; padding:10px; border:1px solid var(--sage); border-radius:var(--r,3px); background:#F3F8F5; font-size:12px; color:var(--ink-soft); line-height:1.4; position:relative; }
+  .install b{ display:block; color:var(--navy); font-size:12.5px; margin-bottom:3px; padding-right:16px; }
+  .install button.go{ margin-top:8px; width:100%; background:var(--sage-dark); color:#fff; border:none; border-radius:var(--r,3px); padding:8px; cursor:pointer; font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:.5px; text-transform:uppercase; }
+  .install button.x{ position:absolute; top:4px; right:6px; background:none; border:none; cursor:pointer; color:var(--ink-soft); font-size:13px; }
+  @supports (height:100dvh){ .app{ min-height:100dvh; } .main{ min-height:100dvh; } .sidebar{ min-height:100dvh; } }
+  @media (max-width:760px){ .composer{ padding-bottom:calc(16px + env(safe-area-inset-bottom)); } .footnote{ padding-bottom:calc(14px + env(safe-area-inset-bottom)); } }
   .brand-logo{ display:block; max-width:100%; max-height:44px; margin-bottom:10px; }
   #quickLinks a{ display:block; font-size:12.5px; color:var(--sage-dark); text-decoration:none; padding:3px 0; }
   #quickLinks a:hover{ text-decoration:underline; }
@@ -159,6 +173,7 @@
     </div>
     <div class="conv-list" id="convList"></div>
     <div class="sidebar-footer">
+      <div id="installBox"></div>
       <div id="usageBox"></div>
       <div id="quickLinks"></div>
       <span id="welcomeMsg"></span> · <a href="#" onclick="logout(); return false;">sair</a>
@@ -287,7 +302,7 @@ function darken(hex, f){
 }
 function applyTheme(b){
   const root = document.documentElement.style;
-  if(b.primaryColor) root.setProperty('--navy', b.primaryColor);
+  if(b.primaryColor){ root.setProperty('--navy', b.primaryColor); const tc = document.querySelector('meta[name=theme-color]'); if(tc) tc.setAttribute('content', b.primaryColor); }
   if(b.accentColor){ root.setProperty('--sage', b.accentColor); root.setProperty('--sage-dark', darken(b.accentColor, 0.25)); }
   const r = { reto:'3px', suave:'8px', redondo:'14px' }[b.radius] || '3px';
   root.setProperty('--r', r);
@@ -342,6 +357,31 @@ function renderUsage(u){
   if(u.upgradeUrl && u.plan !== 'mentoria') h += `<a class="up" href="${escapeHtml(u.upgradeUrl)}" target="_blank" rel="noopener">${u.plan === 'gratis' ? 'Conhecer o plano Assinante' : 'Ver planos'}</a>`;
   box.innerHTML = h;
 }
+// ---- Instalar como app (PWA) ----
+let deferredInstall = null;
+function isStandalone(){ return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true; }
+function isIOS(){ return /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); }
+function installDismissed(){ try{ return localStorage.getItem('installDismissed') === '1'; }catch(e){ return false; } }
+function dismissInstall(){ try{ localStorage.setItem('installDismissed', '1'); }catch(e){} renderInstall(); }
+function renderInstall(){
+  const box = document.getElementById('installBox'); if(!box) return;
+  if(isStandalone() || installDismissed()){ box.innerHTML = ''; return; }
+  if(deferredInstall){
+    box.innerHTML = `<div class="install"><button class="x" onclick="dismissInstall()" title="Fechar">✕</button><b>Instale o app</b>Abra direto da tela inicial do celular, em tela cheia.<button class="go" onclick="doInstall()">Instalar o app</button></div>`;
+  } else if(isIOS()){
+    box.innerHTML = `<div class="install"><button class="x" onclick="dismissInstall()" title="Fechar">✕</button><b>Instale no iPhone</b>Toque em <b style="display:inline;">Compartilhar</b> (o quadrado com a seta para cima) e depois em <b style="display:inline;">Adicionar à Tela de Início</b>.</div>`;
+  } else { box.innerHTML = ''; }
+}
+async function doInstall(){
+  if(!deferredInstall) return;
+  deferredInstall.prompt();
+  try{ await deferredInstall.userChoice; }catch(e){}
+  deferredInstall = null; renderInstall();
+}
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); deferredInstall = e; renderInstall(); });
+window.addEventListener('appinstalled', () => { deferredInstall = null; renderInstall(); });
+if('serviceWorker' in navigator){ window.addEventListener('load', () => { navigator.serviceWorker.register('/sw.js').catch(() => {}); }); }
+
 async function deleteAccount(){
   if(!confirm('Excluir sua conta apaga todas as suas conversas e dados, e não pode ser desfeito. Continuar?')) return;
   const password = prompt('Para confirmar, digite sua senha:');
@@ -676,6 +716,7 @@ async function sendMessage(){
 }
 
 loadBranding();
+renderInstall();
 loadUsage();
 loadConversationList();
 </script>
