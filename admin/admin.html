@@ -90,6 +90,11 @@
   .img-prev.dark{ background:#223449; } .img-prev.round{ width:70px; border-radius:50%; }
   .img-prev img{ max-width:100%; max-height:100%; object-fit:contain; } .img-prev.round img{ width:100%; height:100%; object-fit:cover; }
   button.lnk{ background:none; border:none; color:var(--sage-dark); font-size:12px; cursor:pointer; text-decoration:underline; margin-left:8px; font-family:'IBM Plex Sans',sans-serif; }
+  table.plan-table{ border-collapse:collapse; width:100%; font-size:13.5px; }
+  table.plan-table th{ font-family:'IBM Plex Mono',monospace; font-size:10.5px; letter-spacing:1px; text-transform:uppercase; color:var(--ink-soft); text-align:left; padding:6px 8px; border-bottom:2px solid var(--line); }
+  table.plan-table td{ padding:6px 8px; border-bottom:1px solid var(--line); }
+  table.plan-table input[type=text]{ width:80px; margin:0; padding:6px 8px; }
+  table.plan-table input.lbl{ width:120px; }
   label.fl{ display:block; font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:1px; text-transform:uppercase; color:var(--ink-soft); margin-bottom:4px; }
   label.radio{ display:block; font-size:13.5px; line-height:1.45; padding:8px 0; cursor:pointer; }
   label.radio input{ margin-right:6px; }
@@ -107,6 +112,8 @@
     <button class="nav" id="tabBtn-triagem" onclick="showPage('triagem')">🔎 Triagem e doses <span class="bdg" id="bdg-triagem" style="display:none;"></span></button>
     <div class="grp">Pessoas</div>
     <button class="nav" id="tabBtn-alunos" onclick="showPage('alunos')">🎓 Alunos</button>
+    <div class="grp">Negócio</div>
+    <button class="nav" id="tabBtn-planos" onclick="showPage('planos')">💳 Planos e custos</button>
     <div class="grp">Desempenho</div>
     <button class="nav" id="tabBtn-atividade" onclick="showPage('atividade')">📊 Atividade e lacunas</button>
     <div class="grp">Marca e sistema</div>
@@ -172,6 +179,8 @@
         <input id="studentName" type="text" placeholder="Nome do aluno (ex: João Silva)">
         <input id="studentEmail" type="email" placeholder="E-mail do aluno">
         <input id="studentPhone" type="text" placeholder="WhatsApp (opcional, ex: 5511999998888)">
+        <label class="fl">Plano</label>
+        <select id="studentPlan"><option value="mentoria">Mentoria</option><option value="assinante">Assinante</option><option value="gratis">Grátis</option></select>
         <button class="btn" onclick="addStudent()">Convidar aluno</button>
         <div id="studentStatus" class="status"></div>
       </div>
@@ -196,6 +205,9 @@
           <option value="ativo">Ativos (acessou nos últimos 7 dias)</option>
           <option value="inativo">Sem acessar há 30+ dias</option>
           <option value="nunca">Criou senha, nunca entrou</option>
+        </select>
+        <select id="stPlanFilter" onchange="stPage=1; drawStudents()">
+          <option value="">Todos os planos</option><option value="mentoria">Mentoria</option><option value="assinante">Assinante</option><option value="gratis">Grátis</option>
         </select>
         <button class="btn ghost" onclick="exportStudentsCsv()">Exportar CSV</button>
       </div>
@@ -234,6 +246,42 @@
         <h2>Atividade por aluno</h2>
         <div id="studentActivityList"></div>
       </div>
+    </div>
+
+    <!-- ABA: PLANOS E CUSTOS -->
+    <div class="page" id="page-planos">
+      <h2>Custo do mês (estimado)</h2>
+      <div class="kpis" id="billKpis"><div class="status">Carregando...</div></div>
+      <div id="billPlans" style="margin-top:12px;"></div>
+      <h2>Quem mais consumiu no mês</h2>
+      <div id="billTop"></div>
+
+      <h2>Limites de cada plano</h2>
+      <div class="panel">
+        <div class="status" style="margin:0 0 10px;">Por mês. O mês renova no dia 1º (horário de Brasília). Zero em exames = recurso indisponível no plano.</div>
+        <div style="overflow-x:auto;"><table class="plan-table" id="planTable"></table></div>
+      </div>
+
+      <h2>Gancho de exames grátis</h2>
+      <div class="panel">
+        <label class="fl">Exames grátis, uma única vez, no plano Grátis</label>
+        <input type="text" id="plFreeExams" style="max-width:120px;">
+        <label class="fl">Link do botão "Assinar" (página de vendas ou checkout)</label>
+        <input type="text" id="plUpgrade" placeholder="https://vetjoicefaria.com/...">
+      </div>
+
+      <h2>Preços usados na estimativa de custo</h2>
+      <div class="panel">
+        <div class="status" style="margin:0 0 10px;">Confira os valores atuais na Anthropic e ajuste aqui. O custo exibido é uma estimativa.</div>
+        <div style="display:flex; gap:14px; flex-wrap:wrap;">
+          <div><label class="fl">US$ / milhão de tokens (entrada)</label><input type="text" id="plPin" style="width:140px;"></div>
+          <div><label class="fl">US$ / milhão de tokens (saída)</label><input type="text" id="plPout" style="width:140px;"></div>
+          <div><label class="fl">US$ / mil buscas na web</label><input type="text" id="plPsearch" style="width:140px;"></div>
+          <div><label class="fl">Cotação US$ → R$</label><input type="text" id="plBrl" style="width:120px;"></div>
+        </div>
+      </div>
+      <div style="margin-top:14px;"><button class="btn" onclick="savePlans()">Salvar planos</button></div>
+      <div class="status" id="plStatus"></div>
     </div>
 
     <!-- ABA: APARÊNCIA -->
@@ -334,6 +382,7 @@ const PAGES = {
   acervo:    ['Acervo', 'Os materiais que alimentam as respostas. Busque, adicione ou remova.'],
   triagem:   ['Triagem e doses', 'Catalogação automática dos artigos e revisão das doses extraídas.'],
   alunos:    ['Alunos', 'Convites, acessos e status de cada aluno.'],
+  planos:    ['Planos e custos', 'Limites de cada plano, gancho de exames grátis e custo estimado do mês.'],
   atividade: ['Atividade e lacunas', 'Uso do app, assuntos mais procurados e perguntas que o acervo não cobriu.'],
   aparencia: ['Aparência', 'Logotipos, cores, banners e links do app.'],
   config:    ['Identidade e IA', 'Nome, voz da mentora e como a IA usa a internet.']
@@ -352,6 +401,7 @@ function showPage(name){
   if(name === 'atividade') loadAnalytics();
   if(name === 'config') loadConfig();
   if(name === 'aparencia') loadAppearance();
+  if(name === 'planos') loadPlans();
 }
 
 function setBadge(id, n){
@@ -369,7 +419,8 @@ async function loadOverview(){
     kpi(dash ?? o.students.active7d, 'ativos nos últimos 7 dias'),
     kpi(dash ?? o.questions.last30d, 'perguntas em 30 dias'),
     kpi(o.questions.acervoShare == null ? '–' : o.questions.acervoShare + '%', 'respostas vindas do acervo (30 dias)'),
-    kpi(o.docs.total, 'materiais no acervo')
+    kpi(o.docs.total, 'materiais no acervo'),
+    ...(o.dbEnabled && o.costMonthUsd !== undefined ? [kpi(fmtMoney(o.costMonthUsd), 'custo estimado de IA no mês')] : [])
   ].join('');
   const todos = [];
   if(o.students.pendingInvite) todos.push([`${o.students.pendingInvite} aluno(s) convidado(s) ainda não criaram a senha`, 'alunos', 'Ver alunos']);
@@ -604,7 +655,8 @@ function studentMatches(s, filter){
 function filteredStudents(){
   const q = document.getElementById('stSearch').value.trim().toLowerCase();
   const f = document.getElementById('stFilter').value;
-  return allStudents.filter(s => studentMatches(s, f) &&
+  const pf = document.getElementById('stPlanFilter').value;
+  return allStudents.filter(s => studentMatches(s, f) && (!pf || (s.plan || 'mentoria') === pf) &&
     (!q || (s.name + ' ' + s.email + ' ' + (s.phone || '')).toLowerCase().includes(q)));
 }
 function drawStudents(){
@@ -627,6 +679,10 @@ function drawStudents(){
     card.innerHTML = `<div class="doc-name">${escapeHtml(s.name)}${badge}</div>
       <div class="doc-meta">${escapeHtml(s.email)} · ${phoneLabel}</div>
       <div class="doc-meta">${access}</div>
+      ${s.monthQuestions !== undefined ? `<div class="doc-meta">neste mês: ${s.monthQuestions} pergunta(s), ${s.monthExams} exame(s) · custo estimado ${fmtMoney(s.monthCostUsd)}</div>` : ''}
+      <div style="margin-top:6px;"><select style="width:auto;margin:0;padding:4px 8px;font-size:12px;" onchange="setPlan('${s.id}', this.value)">
+        ${['mentoria','assinante','gratis'].map(p=>`<option value="${p}" ${(s.plan||'mentoria')===p?'selected':''}>${PLAN_NAMES[p]}</option>`).join('')}
+      </select>${s.plan === 'gratis' ? ` <span class="status" style="margin:0 0 0 6px;">exames grátis usados: ${s.freeExamsUsed||0}</span>` : ''}</div>
       <button style="right:120px;" onclick="editPhone('${s.id}','${escapeHtml(s.phone||'')}')" title="Definir/editar número de WhatsApp">whatsapp</button>
       <button style="right:66px;" onclick="resetStudent('${s.id}')" title="Resetar senha (aluno esqueceu)">resetar</button>
       <button onclick="removeStudent('${s.id}')">remover</button>`;
@@ -634,10 +690,17 @@ function drawStudents(){
   });
   document.getElementById('stPager').innerHTML = pagerHtml(stPage, pages, 'stPage--; drawStudents()', 'stPage++; drawStudents()');
 }
+const PLAN_NAMES = { mentoria:'Mentoria', assinante:'Assinante', gratis:'Grátis' };
+let USD_BRL = 5.5;
+function fmtMoney(usd){ return 'R$ ' + (usd * USD_BRL).toFixed(2).replace('.', ','); }
+async function setPlan(id, plan){
+  const res = await fetch('/api/admin/students/' + id + '/plan', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ plan }) });
+  if(res.ok) renderStudents(await res.json());
+}
 function exportStudentsCsv(){
   const q = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
-  const rows = [['Nome','E-mail','WhatsApp','Status','Último acesso','Logins']].concat(filteredStudents().map(s => [
-    s.name, s.email, s.phone || '', !s.passwordSet ? 'aguardando primeiro acesso' : (s.lastLogin ? 'ativo' : 'nunca entrou'),
+  const rows = [['Nome','E-mail','WhatsApp','Plano','Status','Último acesso','Logins']].concat(filteredStudents().map(s => [
+    s.name, s.email, s.phone || '', PLAN_NAMES[s.plan || 'mentoria'], !s.passwordSet ? 'aguardando primeiro acesso' : (s.lastLogin ? 'ativo' : 'nunca entrou'),
     s.lastLogin ? new Date(s.lastLogin).toLocaleString('pt-BR') : '', s.loginCount || 0]));
   const csv = '\uFEFF' + rows.map(r => r.map(q).join(';')).join('\r\n');
   const a = document.createElement('a');
@@ -663,7 +726,7 @@ async function addStudent(){
   if(!name || !email){ status.textContent = 'Preencha nome e e-mail.'; return; }
   const res = await fetch('/api/admin/students', {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ name, email, phone })
+    body: JSON.stringify({ name, email, phone, plan: document.getElementById('studentPlan').value })
   });
   const data = await res.json();
   if(!res.ok){ status.textContent = data.error || 'Erro ao convidar aluno.'; return; }
@@ -818,6 +881,56 @@ async function saveConfig(){
 }
 function resetConfig(){ if(cfgDefaults && confirm('Restaurar os textos e o modo padrão? Clique em Salvar depois.')) fillConfig(cfgDefaults); }
 
+// ---------- Planos e custos ----------
+const PLAN_ORDER = ['gratis', 'assinante', 'mentoria'];
+async function loadPlans(){
+  const [sres, bres] = await Promise.all([fetch('/api/admin/settings'), fetch('/api/admin/billing')]);
+  const cfg = (await sres.json()).settings; const b = await bres.json();
+  USD_BRL = parseFloat(cfg.usdBrl) || 5.5;
+  const plans = JSON.parse(cfg.plans);
+  const T = document.getElementById('planTable');
+  T.innerHTML = '<tr><th>Plano</th><th>Perguntas/mês</th><th>Exames/mês</th><th>Histórico (dias, 0 = todo)</th><th>Trechos por resposta (0 = padrão)</th><th>WhatsApp</th></tr>' +
+    PLAN_ORDER.map(k => { const p = plans[k]; return `<tr data-plan="${k}">
+      <td><input type="text" class="lbl" data-f="label" value="${escapeHtml(p.label)}"></td>
+      <td><input type="text" data-f="questions" value="${p.questions}"></td>
+      <td><input type="text" data-f="exams" value="${p.exams}"></td>
+      <td><input type="text" data-f="historyDays" value="${p.historyDays}"></td>
+      <td><input type="text" data-f="chunks" value="${p.chunks}"></td>
+      <td><input type="checkbox" data-f="whatsapp" ${p.whatsapp ? 'checked' : ''}></td></tr>`; }).join('');
+  document.getElementById('plFreeExams').value = cfg.freeExamsOnce;
+  document.getElementById('plUpgrade').value = cfg.upgradeUrl || '';
+  document.getElementById('plPin').value = cfg.priceInputPerM;
+  document.getElementById('plPout').value = cfg.priceOutputPerM;
+  document.getElementById('plPsearch').value = cfg.priceSearchPer1k;
+  document.getElementById('plBrl').value = cfg.usdBrl;
+
+  const kp = document.getElementById('billKpis');
+  if(!b.dbEnabled){ kp.innerHTML = '<div class="status">O registro de custo exige banco de dados configurado.</div>'; return; }
+  const kpi = (n, l) => `<div class="kpi"><div class="n">${n}</div><div class="l">${l}</div></div>`;
+  const t = b.totals;
+  kp.innerHTML = [kpi(fmtMoney(t.costUsd), 'custo estimado no mês'), kpi(t.questions, 'perguntas de texto'), kpi(t.exams, 'interpretações de exame'),
+    kpi(fmtMoney(t.avgQuestionUsd), 'custo médio por pergunta'), kpi(fmtMoney(t.avgExamUsd), 'custo médio por exame')].join('');
+  document.getElementById('billPlans').innerHTML = b.byPlan.length ? '<table class="plan-table"><tr><th>Plano</th><th>Alunos</th><th>Perguntas</th><th>Exames</th><th>Custo</th><th>Custo por aluno</th></tr>' +
+    b.byPlan.map(r => `<tr><td>${escapeHtml(PLAN_NAMES[r.plan] || r.plan)}</td><td>${r.users}</td><td>${r.q}</td><td>${r.e}</td><td>${fmtMoney(r.cost)}</td><td>${r.users ? fmtMoney(r.cost / r.users) : '–'}</td></tr>`).join('') + '</table>' : '';
+  document.getElementById('billTop').innerHTML = b.topStudents.length
+    ? b.topStudents.map(r => `<div class="doc-card"><div class="doc-name">${escapeHtml(r.name)}<span class="badge">${escapeHtml(PLAN_NAMES[r.plan] || r.plan)}</span></div><div class="doc-meta">${escapeHtml(r.email)} · ${r.n} uso(s) · ${fmtMoney(r.cost)}</div></div>`).join('')
+    : '<div class="status">Ainda sem uso registrado neste mês.</div>';
+}
+async function savePlans(){
+  const plans = {};
+  document.querySelectorAll('#planTable tr[data-plan]').forEach(tr => {
+    const p = {}; tr.querySelectorAll('[data-f]').forEach(i => { p[i.dataset.f] = i.type === 'checkbox' ? i.checked : i.value; });
+    plans[tr.dataset.plan] = p;
+  });
+  const body = { plans, freeExamsOnce: document.getElementById('plFreeExams').value, upgradeUrl: document.getElementById('plUpgrade').value.trim(),
+    priceInputPerM: document.getElementById('plPin').value, priceOutputPerM: document.getElementById('plPout').value,
+    priceSearchPer1k: document.getElementById('plPsearch').value, usdBrl: document.getElementById('plBrl').value };
+  const st = document.getElementById('plStatus'); st.textContent = 'Salvando...';
+  const res = await fetch('/api/admin/settings', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  st.textContent = res.ok ? 'Salvo ✓ (vale na próxima pergunta de cada aluno)' : 'Erro ao salvar.';
+  if(res.ok) loadPlans();
+}
+
 // ---------- Aparência ----------
 function fileToDataUrl(file, maxDim){
   return new Promise((resolve, reject)=>{
@@ -937,6 +1050,7 @@ async function removeBanner(id){
 }
 
 // Lembra a última aba usada
+fetch('/api/admin/settings').then(r=>r.json()).then(d=>{ USD_BRL = parseFloat(d.settings.usdBrl) || 5.5; drawStudents(); }).catch(()=>{});
 let _startTab = 'geral';
 try{ _startTab = localStorage.getItem('oncoway_admin_tab') || 'geral'; }catch(e){}
 showPage(_startTab);
