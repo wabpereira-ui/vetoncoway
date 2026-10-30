@@ -17,6 +17,7 @@ try { Pool = require('pg').Pool; } catch (e) { Pool = null; }
 require('dotenv').config();
 
 const app = express();
+app.set('trust proxy', 1); // atrás do proxy do Render: req.ip passa a ser o IP real do visitante
 app.use(express.json({ limit: '25mb' }));
 
 const PORT = process.env.PORT || 3000;
@@ -136,6 +137,20 @@ async function initDb() {
   // Planos e cotas. Alunos já existentes ficam no plano Mentoria (DEFAULT), então nada muda para eles.
   await pool.query(`ALTER TABLE students ADD COLUMN IF NOT EXISTS plan TEXT DEFAULT 'mentoria';`);
   await pool.query(`ALTER TABLE students ADD COLUMN IF NOT EXISTS free_exams_used INT DEFAULT 0;`);
+  // Cadastro aberto: contas criadas pelo próprio usuário precisam confirmar o e-mail. Contas antigas ficam confirmadas.
+  await pool.query(`ALTER TABLE students ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT TRUE;`);
+  await pool.query(`ALTER TABLE students ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'convite';`);
+  await pool.query(`ALTER TABLE students ADD COLUMN IF NOT EXISTS terms_accepted_at TIMESTAMPTZ;`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS auth_tokens (
+      token_hash TEXT PRIMARY KEY,
+      student_id TEXT REFERENCES students(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      used_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
+  `);
   // Registro de uso (cotas + custo real estimado de cada resposta).
   await pool.query(`
     CREATE TABLE IF NOT EXISTS usage_events (
@@ -241,7 +256,7 @@ function saveStudentsFile(students) {
 
 async function loadStudents() {
   if (useDb) {
-    const { rows } = await pool.query('SELECT id, name, email, phone, password_set AS "passwordSet", salt, hash, last_login AS "lastLogin", COALESCE(login_count,0) AS "loginCount", created_at AS "createdAt", COALESCE(plan,\'mentoria\') AS plan, COALESCE(free_exams_used,0) AS "freeExamsUsed" FROM students ORDER BY created_at ASC');
+    const { rows } = await pool.query('SELECT id, name, email, phone, password_set AS "passwordSet", salt, hash, last_login AS "lastLogin", COALESCE(login_count,0) AS "loginCount", created_at AS "createdAt", COALESCE(plan,\'mentoria\') AS plan, COALESCE(free_exams_used,0) AS "freeExamsUsed", COALESCE(email_verified,true) AS "emailVerified", COALESCE(source,\'convite\') AS source FROM students ORDER BY created_at ASC');
     return rows;
   }
   return loadStudentsFile();
@@ -258,8 +273,15 @@ async function inviteStudent(name, email, phone) {
   const phoneNorm = phone ? normalizePhone(phone) : null;
   const id = 'aluno-' + Date.now();
   if (useDb) {
-    const existing = await pool.query('SELECT id FROM students WHERE email=$1', [emailNorm]);
-    if (existing.rows.length) throw new Error('Já existe um convite ou conta com esse e-mail.');
+    const existing = await pool.query('SELECT id, name, source, plan FROM students WHERE email=$1', [emailNorm]);
+    if (existing.rows.length) {
+      // Pessoa que já se cadastrou sozinha (plano Grátis) e agora entrou na mentoria: promove a conta, sem apagar nada.
+      if (existing.rows[0].source === 'cadastro' && existing.rows[0].plan !== 'mentoria') {
+        await pool.query(`UPDATE students SET plan='mentoria', phone=COALESCE($2, phone) WHERE id=$1`, [existing.rows[0].id, phoneNorm]);
+        return { id: existing.rows[0].id, name: existing.rows[0].name, email: emailNorm, phone: phoneNorm, promoted: true };
+      }
+      throw new Error('Já existe um convite ou conta com esse e-mail.');
+    }
     await pool.query('INSERT INTO students (id, name, email, phone, password_set) VALUES ($1,$2,$3,$4,false)', [id, name, emailNorm, phoneNorm]);
     return { id, name, email: emailNorm, phone: phoneNorm };
   }
@@ -311,7 +333,7 @@ async function verifyStudent(email, password) {
   let student;
   if (useDb) {
     const { rows } = await pool.query('SELECT * FROM students WHERE email=$1', [emailNorm]);
-    student = rows[0] ? { id: rows[0].id, name: rows[0].name, passwordSet: rows[0].password_set, salt: rows[0].salt, hash: rows[0].hash } : null;
+    student = rows[0] ? { id: rows[0].id, name: rows[0].name, passwordSet: rows[0].password_set, salt: rows[0].salt, hash: rows[0].hash, emailVerified: rows[0].email_verified !== false } : null;
   } else {
     student = loadStudentsFile().find(s => s.email === emailNorm);
   }
@@ -474,6 +496,217 @@ function requireStudentApi(req, res, next) {
   return res.status(401).json({ error: 'not_authenticated' });
 }
 
+// ---------- Cadastro aberto, confirmação de e-mail e recuperação de senha ----------
+// Envio de e-mail: Brevo (BREVO_API_KEY) ou Resend (RESEND_API_KEY). Se as duas existirem, usa o Brevo.
+const BREVO_API_KEY = process.env.BREVO_API_KEY;
+const BREVO_API_URL = process.env.BREVO_API_URL || 'https://api.brevo.com/v3/smtp/email';
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
+const RESEND_API_URL = process.env.RESEND_API_URL || 'https://api.resend.com/emails';
+const MAIL_FROM = process.env.MAIL_FROM; // ex: "Oncoway <contato@vetjoicefaria.com>"
+function mailProvider() { return BREVO_API_KEY ? 'brevo' : (RESEND_API_KEY ? 'resend' : null); }
+function mailConfigured() { return Boolean(mailProvider() && MAIL_FROM); }
+function parseFrom(from) {
+  const m = /^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/.exec(from || '');
+  return m ? { name: m[1].trim(), email: m[2].trim() } : { name: '', email: String(from || '').trim() };
+}
+
+async function sendMail({ to, subject, html, text }) {
+  let r;
+  if (mailProvider() === 'brevo') {
+    const f = parseFrom(MAIL_FROM);
+    r = await fetch(BREVO_API_URL, {
+      method: 'POST',
+      headers: { 'api-key': BREVO_API_KEY, 'Content-Type': 'application/json', 'accept': 'application/json' },
+      body: JSON.stringify({ sender: f.name ? { name: f.name, email: f.email } : { email: f.email }, to: [{ email: to }], subject, htmlContent: html, textContent: text })
+    });
+  } else {
+    r = await fetch(RESEND_API_URL, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: MAIL_FROM, to: [to], subject, html, text })
+    });
+  }
+  if (!r.ok) {
+    const body = await r.text().catch(() => '');
+    throw new Error(`Falha ao enviar e-mail (${r.status}): ${body.slice(0, 200)}`);
+  }
+}
+const escHtml = t => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+function baseUrl(req) {
+  if (process.env.APP_URL) return process.env.APP_URL.replace(/\/+$/, '');
+  const proto = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+  return `${proto}://${req.get('host')}`;
+}
+async function sendAuthMail(req, to, kind, name, link) {
+  const cfg = await getSettings();
+  const app = escHtml(cfg.appName);
+  const templates = {
+    verify: { subject: `Confirme seu e-mail — ${cfg.appName}`, intro: `Olá, ${escHtml(name)}! Falta só confirmar seu e-mail para ativar sua conta no ${app}.`, cta: 'Confirmar meu e-mail', note: 'O link vale por 24 horas. Se não foi você, ignore este e-mail.' },
+    reset: { subject: `Redefinir sua senha — ${cfg.appName}`, intro: `Recebemos um pedido para redefinir a senha da sua conta no ${app}.`, cta: 'Criar nova senha', note: 'O link vale por 1 hora. Se não foi você, ignore este e-mail: sua senha continua a mesma.' }
+  };
+  const t = templates[kind];
+  const html = `<div style="font-family:Arial,sans-serif;max-width:480px;margin:auto;color:#1E2A32"><h2 style="color:${escHtml(cfg.primaryColor)}">${app}</h2><p>${t.intro}</p><p><a href="${escHtml(link)}" style="display:inline-block;background:${escHtml(cfg.accentColor)};color:#fff;padding:12px 20px;border-radius:4px;text-decoration:none">${t.cta}</a></p><p style="font-size:13px;color:#4B5A61">${t.note}</p><p style="font-size:12px;color:#8a979d">Se o botão não funcionar, copie este endereço no navegador:<br>${escHtml(link)}</p></div>`;
+  await sendMail({ to, subject: t.subject, html, text: `${t.intro.replace(/<[^>]+>/g, '')}\n\n${link}\n\n${t.note}` });
+}
+async function sendInfoMail(to, subject, bodyHtml) {
+  const cfg = await getSettings();
+  await sendMail({ to, subject: `${subject} — ${cfg.appName}`, html: `<div style="font-family:Arial,sans-serif;max-width:480px;margin:auto;color:#1E2A32"><h2 style="color:${escHtml(cfg.primaryColor)}">${escHtml(cfg.appName)}</h2>${bodyHtml}</div>`, text: bodyHtml.replace(/<[^>]+>/g, ' ') });
+}
+
+// Limite de tentativas em memória (suficiente para um servidor único).
+const _rate = new Map();
+function rateLimit(key, max, windowMs) {
+  const now = Date.now();
+  const arr = (_rate.get(key) || []).filter(t => now - t < windowMs);
+  if (arr.length >= max) { _rate.set(key, arr); return false; }
+  arr.push(now); _rate.set(key, arr);
+  return true;
+}
+setInterval(() => { const now = Date.now(); for (const [k, v] of _rate) { if (!v.some(t => now - t < 3600000)) _rate.delete(k); } }, 600000).unref();
+
+const sha256 = t => crypto.createHash('sha256').update(t).digest('hex');
+async function createAuthToken(studentId, kind, ttlMs) {
+  const raw = crypto.randomBytes(32).toString('hex');
+  await pool.query('UPDATE auth_tokens SET used_at = now() WHERE student_id=$1 AND kind=$2 AND used_at IS NULL', [studentId, kind]);
+  await pool.query('INSERT INTO auth_tokens (token_hash, student_id, kind, expires_at) VALUES ($1,$2,$3,$4)', [sha256(raw), studentId, kind, new Date(Date.now() + ttlMs)]);
+  return raw;
+}
+async function consumeAuthToken(raw, kind) {
+  if (!raw || typeof raw !== 'string' || raw.length > 200) return null;
+  const { rows } = await pool.query(
+    'UPDATE auth_tokens SET used_at = now() WHERE token_hash=$1 AND kind=$2 AND used_at IS NULL AND expires_at > now() RETURNING student_id',
+    [sha256(raw), kind]);
+  return rows[0] ? rows[0].student_id : null;
+}
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+const GENERIC_SENT = 'Se o e-mail estiver correto, enviamos as instruções. Confira também a caixa de spam.';
+
+function simplePage(title, bodyHtml) {
+  return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escHtml(title)}</title>
+<style>body{margin:0;background:#F1F3EE;font-family:Arial,sans-serif;color:#1E2A32;line-height:1.6}.c{max-width:680px;margin:40px auto;padding:28px;background:#fff;border:1px solid #CBD3C4;border-top:3px solid #5C8374}h1{font-size:22px;color:#223449}a{color:#3F5C50}p{margin:10px 0}</style></head><body><div class="c"><h1>${escHtml(title)}</h1>${bodyHtml}</div></body></html>`;
+}
+function textToHtml(t) { return String(t).split(/\n{2,}/).map(p => `<p>${escHtml(p).replace(/\n/g, '<br>')}</p>`).join(''); }
+
+app.get('/termos', async (req, res) => { const c = await getSettings(); res.send(simplePage('Termos de uso', textToHtml(c.termsText) + '<p><a href="/login.html">Voltar</a></p>')); });
+app.get('/privacidade', async (req, res) => { const c = await getSettings(); res.send(simplePage('Política de privacidade', textToHtml(c.privacyText) + '<p><a href="/login.html">Voltar</a></p>')); });
+
+// Criar conta (plano Grátis). Resposta sempre genérica, para não revelar quais e-mails já existem.
+app.post('/api/signup', async (req, res) => {
+  try {
+    const { name, email, password, acceptTerms, website } = req.body || {};
+    if (website) return res.json({ ok: true, message: GENERIC_SENT }); // honeypot: robôs preenchem
+    const cfg = await getSettings();
+    if (cfg.signupOpen !== 'sim' || !useDb) return res.status(403).json({ error: 'O cadastro ainda não está aberto.' });
+    if (!mailConfigured()) return res.status(503).json({ error: 'O cadastro está temporariamente indisponível.' });
+    const nm = String(name || '').trim(), em = String(email || '').trim().toLowerCase(), pw = String(password || '');
+    if (nm.length < 2 || nm.length > 80) return res.status(400).json({ error: 'Informe seu nome.' });
+    if (!EMAIL_RE.test(em) || em.length > 160) return res.status(400).json({ error: 'E-mail inválido.' });
+    if (pw.length < 8 || pw.length > 128) return res.status(400).json({ error: 'A senha precisa ter entre 8 e 128 caracteres.' });
+    if (acceptTerms !== true) return res.status(400).json({ error: 'É preciso aceitar os termos de uso e a política de privacidade.' });
+    // limite só para tentativas válidas (as que gastariam e-mail): 8 por hora por IP, 3 por e-mail
+    if (!rateLimit('signup:' + req.ip, 8, 3600000)) return res.status(429).json({ error: 'Muitas tentativas. Tente novamente mais tarde.' });
+    if (!rateLimit('signup-mail:' + em, 3, 3600000)) return res.json({ ok: true, message: GENERIC_SENT });
+
+    const existing = await pool.query('SELECT id, name, password_set FROM students WHERE email=$1', [em]);
+    const root = baseUrl(req);
+    if (!existing.rows.length) {
+      const id = 'u-' + crypto.randomBytes(8).toString('hex');
+      const salt = crypto.randomBytes(16).toString('hex');
+      await pool.query(
+        `INSERT INTO students (id, name, email, password_set, salt, hash, plan, source, email_verified, terms_accepted_at)
+         VALUES ($1,$2,$3,true,$4,$5,'gratis','cadastro',false,now())`, [id, nm, em, salt, hashPassword(pw, salt)]);
+      const token = await createAuthToken(id, 'verify', 24 * 3600000);
+      await sendAuthMail(req, em, 'verify', nm, `${root}/verificar?token=${token}`);
+    } else if (existing.rows[0].password_set) {
+      await sendInfoMail(em, 'Você já tem uma conta', `<p>Alguém (provavelmente você) tentou criar uma conta com este e-mail, mas ele já está cadastrado.</p><p><a href="${escHtml(root)}/login.html">Entrar</a> · Esqueceu a senha? Use "Esqueci minha senha" na tela de entrada.</p>`);
+    } else {
+      await sendInfoMail(em, 'Seu convite está esperando', `<p>Este e-mail já foi convidado pela mentora. Na tela de entrada, use a aba <b>Primeiro acesso</b> para criar sua senha.</p><p><a href="${escHtml(root)}/login.html">Abrir o app</a></p>`);
+    }
+    res.json({ ok: true, message: GENERIC_SENT });
+  } catch (e) { console.error('signup:', e.message); res.status(500).json({ error: 'Não foi possível concluir agora. Tente novamente.' }); }
+});
+
+app.get('/verificar', async (req, res) => {
+  try {
+    if (!useDb) return res.status(404).end();
+    const studentId = await consumeAuthToken(String(req.query.token || ''), 'verify');
+    if (!studentId) return res.status(400).send(simplePage('Link inválido ou expirado', '<p>Este link de confirmação não vale mais. Entre com seu e-mail e senha e peça um novo link.</p><p><a href="/login.html">Ir para a entrada</a></p>'));
+    await pool.query('UPDATE students SET email_verified=true WHERE id=$1', [studentId]);
+    const { rows } = await pool.query('SELECT id, name FROM students WHERE id=$1', [studentId]);
+    createSession(rows[0], res, req);
+    await recordLogin(rows[0].id);
+    res.redirect('/');
+  } catch (e) { console.error('verificar:', e.message); res.status(500).send(simplePage('Erro', '<p>Não foi possível confirmar agora. Tente novamente.</p>')); }
+});
+
+app.post('/api/resend-verification', async (req, res) => {
+  try {
+    const em = String((req.body || {}).email || '').trim().toLowerCase();
+    if (!useDb || !mailConfigured() || !EMAIL_RE.test(em)) return res.json({ ok: true, message: GENERIC_SENT });
+    if (!rateLimit('resend-ip:' + req.ip, 10, 3600000) || !rateLimit('resend:' + em, 3, 3600000)) return res.json({ ok: true, message: GENERIC_SENT });
+    const { rows } = await pool.query(`SELECT id, name FROM students WHERE email=$1 AND email_verified=false AND source='cadastro'`, [em]);
+    if (rows[0]) { const token = await createAuthToken(rows[0].id, 'verify', 24 * 3600000); await sendAuthMail(req, em, 'verify', rows[0].name, `${baseUrl(req)}/verificar?token=${token}`); }
+    res.json({ ok: true, message: GENERIC_SENT });
+  } catch (e) { console.error('resend:', e.message); res.json({ ok: true, message: GENERIC_SENT }); }
+});
+
+app.post('/api/forgot', async (req, res) => {
+  try {
+    const em = String((req.body || {}).email || '').trim().toLowerCase();
+    if (!useDb || !mailConfigured() || !EMAIL_RE.test(em)) return res.json({ ok: true, message: GENERIC_SENT });
+    if (!rateLimit('forgot-ip:' + req.ip, 10, 3600000) || !rateLimit('forgot:' + em, 3, 3600000)) return res.json({ ok: true, message: GENERIC_SENT });
+    const { rows } = await pool.query('SELECT id, name FROM students WHERE email=$1 AND password_set=true', [em]);
+    if (rows[0]) { const token = await createAuthToken(rows[0].id, 'reset', 3600000); await sendAuthMail(req, em, 'reset', rows[0].name, `${baseUrl(req)}/redefinir?token=${token}`); }
+    res.json({ ok: true, message: GENERIC_SENT });
+  } catch (e) { console.error('forgot:', e.message); res.json({ ok: true, message: GENERIC_SENT }); }
+});
+
+app.get('/redefinir', (req, res) => { res.sendFile(path.join(__dirname, 'public', 'reset.html')); });
+
+app.post('/api/reset', async (req, res) => {
+  try {
+    if (!useDb) return res.status(404).end();
+    if (!rateLimit('reset:' + req.ip, 20, 3600000)) return res.status(429).json({ error: 'Muitas tentativas. Tente novamente mais tarde.' });
+    const { token, password } = req.body || {};
+    const pw = String(password || '');
+    if (pw.length < 8 || pw.length > 128) return res.status(400).json({ error: 'A senha precisa ter entre 8 e 128 caracteres.' });
+    const studentId = await consumeAuthToken(String(token || ''), 'reset');
+    if (!studentId) return res.status(400).json({ error: 'Este link não vale mais. Peça um novo em "Esqueci minha senha".' });
+    const salt = crypto.randomBytes(16).toString('hex');
+    await pool.query('UPDATE students SET salt=$1, hash=$2, password_set=true, email_verified=true WHERE id=$3', [salt, hashPassword(pw, salt), studentId]);
+    // encerra sessões antigas dessa conta
+    for (const [sid, sess] of sessions) { if (sess.studentId === studentId) sessions.delete(sid); }
+    const { rows } = await pool.query('SELECT id, name FROM students WHERE id=$1', [studentId]);
+    createSession(rows[0], res, req);
+    await recordLogin(studentId);
+    res.json({ ok: true });
+  } catch (e) { console.error('reset:', e.message); res.status(500).json({ error: 'Não foi possível redefinir agora.' }); }
+});
+
+// O próprio usuário apaga a conta (LGPD): remove conversas, uso e cadastro.
+app.post('/api/me/delete', requireStudentApi, async (req, res) => {
+  try {
+    if (!useDb) return res.status(400).json({ error: 'Indisponível.' });
+    const { rows } = await pool.query('SELECT email FROM students WHERE id=$1', [req.student.studentId]);
+    if (!rows[0]) return res.status(404).json({ error: 'Conta não encontrada.' });
+    const ok = await verifyStudent(rows[0].email, (req.body || {}).password);
+    if (!ok) return res.status(403).json({ error: 'Senha incorreta.' });
+    await deleteStudent(req.student.studentId);
+    destroySession(req, res);
+    res.json({ ok: true });
+  } catch (e) { console.error('delete account:', e.message); res.status(500).json({ error: 'Não foi possível excluir agora.' }); }
+});
+
+// Limpeza: contas criadas sozinhas e nunca confirmadas somem depois de 7 dias.
+async function cleanupUnverified() {
+  if (!useDb) return;
+  try {
+    await pool.query(`DELETE FROM students WHERE source='cadastro' AND email_verified=false AND created_at < now() - interval '7 days'`);
+    await pool.query(`DELETE FROM auth_tokens WHERE expires_at < now() - interval '1 day'`);
+  } catch (e) { console.error('cleanup:', e.message); }
+}
+setInterval(cleanupUnverified, 3600000).unref();
+
 // Rotas públicas de login/cadastro (sem exigir sessão)
 app.get('/api/branding', async (req, res) => {
   try { res.json(await getBranding()); }
@@ -500,8 +733,14 @@ app.get('/login.html', (req, res) => {
 
 app.post('/api/login', async (req, res) => {
   const { email, password } = req.body;
+  if (!rateLimit('login:' + req.ip + ':' + String(email || '').toLowerCase(), 20, 15 * 60000)) {
+    return res.status(429).json({ error: 'Muitas tentativas. Aguarde alguns minutos e tente de novo.' });
+  }
   const student = await verifyStudent(email, password);
   if (!student) return res.status(401).json({ error: 'E-mail ou senha inválidos.' });
+  if (student.emailVerified === false) {
+    return res.status(403).json({ error: 'Confirme seu e-mail para entrar. Enviamos um link quando você criou a conta.', needVerify: true });
+  }
   createSession(student, res, req);
   await recordLogin(student.id);
   res.json({ ok: true, name: student.name });
@@ -509,6 +748,7 @@ app.post('/api/login', async (req, res) => {
 
 app.post('/api/register', async (req, res) => {
   const { email, password } = req.body;
+  if (!rateLimit('register:' + req.ip, 20, 3600000)) return res.status(429).json({ error: 'Muitas tentativas. Tente novamente mais tarde.' });
   if (!email || !password) return res.status(400).json({ error: 'E-mail e senha são obrigatórios.' });
   if (password.length < 6) return res.status(400).json({ error: 'A senha precisa ter pelo menos 6 caracteres.' });
   try {
@@ -806,8 +1046,57 @@ const DEFAULT_SETTINGS = {
   freeExamsOnce: '5',        // exames grátis, uma única vez, para quem está no plano Grátis
   upgradeUrl: '',            // para onde vai o botão "Assinar" (página de vendas/checkout)
   // Preços da API para ESTIMAR o custo (confira na Anthropic e ajuste): US$ por milhão de tokens e por mil buscas.
-  priceInputPerM: '3', priceOutputPerM: '15', priceSearchPer1k: '10', usdBrl: '5.5'
+  priceInputPerM: '3', priceOutputPerM: '15', priceSearchPer1k: '10', usdBrl: '5.5',
+  // Cadastro aberto (desligado por padrão: só quem é convidado entra, como sempre foi)
+  signupOpen: 'nao',
+  supportEmail: '',
+  termsText: '',             // vazio = modelo padrão (DEFAULT_TERMS)
+  privacyText: ''            // vazio = modelo padrão (DEFAULT_PRIVACY)
 };
+const DEFAULT_TERMS = `MODELO PARA REVISÃO: substitua pelo texto aprovado pela mentora e revisado por um advogado.
+
+1. O que é o serviço
+Este aplicativo é uma ferramenta de apoio ao raciocínio clínico em oncologia veterinária, baseada no material e no método da mentora. Ele não emite laudos, não substitui o julgamento do médico-veterinário e não deve ser usado como única base para decisões clínicas.
+
+2. Responsabilidade clínica
+Doses, protocolos e interpretações de exames são referências de apoio e devem sempre ser conferidos com a fonte original e com o profissional responsável pelo caso. A decisão clínica é sempre do médico-veterinário.
+
+3. Conta e uso
+Você é responsável pelas informações e pela senha da sua conta. A conta é pessoal e não deve ser compartilhada. Podemos limitar ou suspender contas usadas de forma abusiva.
+
+4. Planos e limites
+Cada plano tem limites mensais de uso, informados no aplicativo. Os limites podem ser alterados, com aviso prévio razoável.
+
+5. Conteúdo e propriedade intelectual
+O conteúdo do aplicativo e do material da mentora é protegido por direitos autorais. É proibido copiar, redistribuir ou usar o conteúdo para treinar outros sistemas.
+
+6. Dados de pacientes e tutores
+Não envie dados pessoais de tutores (nome, telefone, endereço, documentos) em perguntas ou exames. Remova essas informações antes de anexar.
+
+7. Alterações e contato
+Estes termos podem ser atualizados. Dúvidas: use o contato informado no aplicativo.`;
+const DEFAULT_PRIVACY = `MODELO PARA REVISÃO: substitua pelo texto aprovado pela mentora e revisado por um advogado (LGPD).
+
+1. Dados que coletamos
+Nome, e-mail, senha (armazenada de forma criptografada), plano, suas perguntas, as respostas geradas e os exames ou arquivos que você anexar, além de dados de uso (datas de acesso e quantidade de perguntas).
+
+2. Para que usamos
+Para criar e manter sua conta, responder às suas perguntas, controlar os limites do plano, melhorar o material de ensino com dados agregados e garantir a segurança do serviço.
+
+3. Com quem compartilhamos
+Usamos prestadores para operar o serviço: hospedagem, banco de dados, envio de e-mails e o provedor de inteligência artificial que processa suas perguntas e anexos. Eles tratam os dados apenas para prestar o serviço.
+
+4. Por quanto tempo guardamos
+Enquanto sua conta existir. Contas não confirmadas por e-mail são apagadas depois de alguns dias. Ao excluir a conta, apagamos seus dados e conversas.
+
+5. Seus direitos (LGPD)
+Você pode pedir acesso, correção ou exclusão dos seus dados. A exclusão da conta pode ser feita dentro do aplicativo, ou pelo contato informado.
+
+6. Segurança
+Adotamos medidas técnicas para proteger seus dados, mas nenhum sistema é totalmente imune a falhas.
+
+7. Contato
+Use o contato informado no aplicativo para falar sobre privacidade.`;
 const PLAN_KEYS = ['gratis', 'assinante', 'mentoria'];
 const DEFAULT_PLANS = {
   gratis:    { label: 'Grátis',    questions: 10,   exams: 0,    historyDays: 7, chunks: 2, whatsapp: false },
@@ -870,6 +1159,10 @@ async function getSettings() {
   merged.priceOutputPerM = cleanNum(merged.priceOutputPerM, '15', 1000);
   merged.priceSearchPer1k = cleanNum(merged.priceSearchPer1k, '10', 1000);
   merged.usdBrl = cleanNum(merged.usdBrl, '5.5', 100);
+  if (!['sim', 'nao'].includes(merged.signupOpen)) merged.signupOpen = 'nao';
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(merged.supportEmail)) merged.supportEmail = '';
+  if (!merged.termsText) merged.termsText = DEFAULT_TERMS;
+  if (!merged.privacyText) merged.privacyText = DEFAULT_PRIVACY;
   _settingsCache = merged; _settingsAt = Date.now();
   return merged;
 }
@@ -878,7 +1171,7 @@ async function saveSettings(input) {
   const clean = {};
   const limits = { appName: 60, tagline: 160, mentorName: 80, mentorTitle: 100, voice: 1500, searchMode: 20,
     primaryColor: 7, accentColor: 7, fontHeading: 10, radius: 10, showEntryCards: 3, quickLinks: 2500,
-    plans: 4000, freeExamsOnce: 4, upgradeUrl: 300, priceInputPerM: 10, priceOutputPerM: 10, priceSearchPer1k: 10, usdBrl: 10 };
+    plans: 4000, freeExamsOnce: 4, upgradeUrl: 300, signupOpen: 3, supportEmail: 160, termsText: 20000, privacyText: 20000, priceInputPerM: 10, priceOutputPerM: 10, priceSearchPer1k: 10, usdBrl: 10 };
   for (const k of Object.keys(DEFAULT_SETTINGS)) {
     if (typeof input[k] === 'string') clean[k] = input[k].trim().slice(0, limits[k]);
   }
@@ -887,6 +1180,8 @@ async function saveSettings(input) {
   for (const [k, list] of Object.entries(OPTIONS)) if (clean[k] !== undefined && !list.includes(clean[k])) delete clean[k];
   if (clean.quickLinks !== undefined) clean.quickLinks = sanitizeQuickLinks(input.quickLinks);
   if (input.plans !== undefined) clean.plans = JSON.stringify(sanitizePlans(input.plans));
+  if (clean.signupOpen !== undefined && !['sim', 'nao'].includes(clean.signupOpen)) delete clean.signupOpen;
+  if (clean.supportEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean.supportEmail)) delete clean.supportEmail;
   if (clean.freeExamsOnce !== undefined) clean.freeExamsOnce = String(clampInt(clean.freeExamsOnce, 0, 100, 5));
   if (clean.upgradeUrl !== undefined && clean.upgradeUrl && !/^https?:\/\//i.test(clean.upgradeUrl)) delete clean.upgradeUrl;
   for (const [k, d, m] of [['priceInputPerM', '3', 1000], ['priceOutputPerM', '15', 1000], ['priceSearchPer1k', '10', 1000], ['usdBrl', '5.5', 100]]) {
@@ -1001,6 +1296,7 @@ async function getBranding() {
     appName: c.appName, tagline: c.tagline, mentorName: c.mentorName, mentorTitle: c.mentorTitle,
     primaryColor: c.primaryColor, accentColor: c.accentColor, fontHeading: c.fontHeading, radius: c.radius,
     showEntryCards: c.showEntryCards === 'sim',
+    signupOpen: c.signupOpen === 'sim' && mailConfigured() && useDb, supportEmail: c.supportEmail,
     quickLinks: JSON.parse(c.quickLinks),
     logo: img('logo'), logoLight: img('logoLight'), photo: img('photo'),
     banners: banners.filter(b => b.active !== false).map(b => ({
@@ -1390,7 +1686,7 @@ app.post('/api/admin/catalog-batch', requireAdmin, async (req, res) => {
 });
 
 app.get('/api/admin/settings', requireAdmin, async (req, res) => {
-  res.json({ settings: await getSettings(), defaults: DEFAULT_SETTINGS, modes: SEARCH_MODES });
+  res.json({ settings: await getSettings(), defaults: DEFAULT_SETTINGS, modes: SEARCH_MODES, mail: { configured: mailConfigured(), from: MAIL_FROM || '', provider: mailProvider() } });
 });
 app.post('/api/admin/settings', requireAdmin, async (req, res) => {
   try { res.json({ ok: true, settings: await saveSettings(req.body || {}) }); }
@@ -1478,7 +1774,8 @@ app.delete('/api/admin/doses/:id', requireAdmin, async (req, res) => {
 function publicStudentFields(s) {
   return { id: s.id, name: s.name, email: s.email, phone: s.phone || '', passwordSet: s.passwordSet,
     lastLogin: s.lastLogin || null, loginCount: s.loginCount || 0, createdAt: s.createdAt || null,
-    plan: s.plan || 'mentoria', freeExamsUsed: s.freeExamsUsed || 0 };
+    plan: s.plan || 'mentoria', freeExamsUsed: s.freeExamsUsed || 0,
+    emailVerified: s.emailVerified !== false, source: s.source || 'convite' };
 }
 
 // Lista de alunos com o uso do mês (perguntas, exames e custo estimado).
