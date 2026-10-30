@@ -76,7 +76,15 @@
   .msg.assistant{ align-self:flex-start; }
   .bubble{ padding:13px 16px; border-radius:4px; font-size:14.5px; line-height:1.6; }
   .msg.user .bubble{ background:var(--navy); color:#fff; border-radius:4px 4px 2px 4px; white-space:pre-wrap; }
-  .msg.assistant .bubble{ background:var(--card); border:1px solid var(--line); border-radius:4px 4px 4px 2px; color:var(--ink); }
+  .msg.assistant{ max-width:92%; }
+  .msg.assistant .bubble{ background:var(--card); border:1px solid var(--line); border-left:3px solid var(--sage); border-radius:2px; color:var(--ink); padding:16px 20px 14px; }
+  .msg.assistant .bubble::before{ content:attr(data-by); display:block; font-family:'IBM Plex Mono',monospace; font-size:10.5px; letter-spacing:1.6px; text-transform:uppercase; color:var(--sage-dark); margin-bottom:8px; }
+  .msg.assistant .bubble[data-by='']::before{ display:none; }
+  .entry-cards{ display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:10px; margin-top:18px; text-align:left; }
+  .entry-card{ background:var(--card); border:1px solid var(--line); border-top:3px solid var(--sage); border-radius:3px; padding:12px 14px; cursor:pointer; }
+  .entry-card:hover{ border-top-color:var(--navy); }
+  .entry-card b{ display:block; font-family:'Source Serif 4',serif; font-size:14.5px; color:var(--navy); margin-bottom:3px; }
+  .entry-card span{ font-size:12.5px; color:var(--ink-soft); line-height:1.4; }
   .bubble h1, .bubble h2, .bubble h3{ font-family:'Source Serif 4',serif; color:var(--navy); margin:14px 0 6px; }
   .bubble h1:first-child, .bubble h2:first-child, .bubble h3:first-child{ margin-top:0; }
   .bubble ul, .bubble ol{ margin:6px 0; padding-left:22px; }
@@ -124,7 +132,7 @@
 
   <div class="sidebar" id="sidebar">
     <div class="sidebar-header">
-      <div class="sidebar-title">Agente Oncoway</div>
+      <div class="sidebar-title" id="brandName">Agente Oncoway</div>
       <button class="new-chat-btn" onclick="startNewConversation()">+ Nova conversa</button>
     </div>
     <div class="conv-list" id="convList"></div>
@@ -135,24 +143,15 @@
 
   <div class="main">
     <div class="header">
-      <div class="eyebrow">Programa de Mentoria em Oncologia Veterinária</div>
-      <h1 class="title">Console de Consulta</h1>
-      <div class="subtitle">Perguntas, interpretação de exames (texto, foto ou PDF — até 5 por vez) e consulta de doses.</div>
+      <div class="eyebrow" id="brandEyebrow">Oncologia Veterinária</div>
+      <h1 class="title" id="brandTitle">Agente Oncoway</h1>
+      <div class="subtitle" id="brandTagline">Raciocínio clínico em oncologia veterinária.</div>
     </div>
 
     <div class="chat-col" id="chatCol">
       <div class="drop-overlay" id="dropOverlay">Solte aqui para anexar (até 5 arquivos)</div>
       <div class="messages" id="messages">
-        <div class="empty-state" id="emptyState">
-          <h3>Comece uma consulta</h3>
-          <p>Pergunte digitando, pelo microfone, ou anexe (clicando, arrastando ou colando) até 5 fotos/PDFs de exames.</p>
-          <div class="chips">
-            <div class="chip" onclick="askQuick(this)">Como funciona o protocolo CHOP?</div>
-            <div class="chip" onclick="askQuick(this)">Como interpretar leucopenia pós-quimioterapia?</div>
-            <div class="chip" onclick="askQuick(this)">Qual a dose de vincristina no CHOP?</div>
-            <div class="chip" onclick="askQuick(this)">Como estadiar um mastocitoma cutâneo?</div>
-          </div>
-        </div>
+        <div id="emptyHost"></div>
       </div>
     </div>
 
@@ -240,22 +239,42 @@ function renderConversationList(list){
   `).join('');
 }
 
+let BRAND = { appName:'Agente Oncoway', tagline:'', mentorName:'a mentora', mentorTitle:'' };
+function emptyStateHtml(){
+  const m = escapeHtml(BRAND.mentorName);
+  return `<div class="empty-state" id="emptyState">
+    <h3>Traga o caso. Vamos raciocinar juntos.</h3>
+    <p>Descreva o paciente, cole ou anexe exames (até 5 fotos/PDFs) ou pergunte por voz. As respostas seguem o método de ${m}.</p>
+    <div class="entry-cards">
+      <div class="entry-card" onclick="askQuick(this)" data-q="Quero discutir um caso clínico. Pode me guiar pelo raciocínio?"><b>Discutir um caso</b><span>Raciocínio clínico passo a passo, com perguntas que afinam a conduta.</span></div>
+      <div class="entry-card" onclick="askQuick(this)" data-q="Quero interpretar um exame. Vou anexar o resultado."><b>Interpretar exames</b><span>Hemograma, bioquímico, citologia e imagem, lidos no contexto oncológico.</span></div>
+      <div class="entry-card" onclick="askQuick(this)" data-q="Qual a dose de vincristina no CHOP?"><b>Consultar dose / protocolo</b><span>Faixas de referência com a fonte e o alerta de conferência.</span></div>
+      <div class="entry-card" onclick="askQuick(this)" data-q="Como estadiar um mastocitoma cutâneo?"><b>Estadiamento e conduta</b><span>O que pedir, em que ordem e por quê.</span></div>
+    </div>
+  </div>`;
+}
+async function loadBranding(){
+  try{
+    const r = await fetch('/api/branding'); if(!r.ok) return;
+    BRAND = await r.json();
+    document.title = BRAND.appName;
+    document.getElementById('brandName').textContent = BRAND.appName;
+    document.getElementById('brandEyebrow').textContent = BRAND.mentorName + (BRAND.mentorTitle ? ' · ' + BRAND.mentorTitle : '');
+    document.getElementById('brandTitle').textContent = BRAND.appName;
+    document.getElementById('brandTagline').textContent = BRAND.tagline;
+    const fn = document.querySelector('.footnote');
+    if(fn) fn.textContent = '⚠ ' + BRAND.appName + ' — doses e interpretações devem ser conferidas com a fonte original e com ' + BRAND.mentorName + ' antes de qualquer uso clínico.';
+    if(document.getElementById('emptyHost') && !currentConversationId) document.getElementById('emptyHost').outerHTML = emptyStateHtml();
+  }catch(e){}
+}
+
 function startNewConversation(){
   currentConversationId = null;
   pendingAttachments = [];
   renderAttachments();
   document.getElementById('input').value = '';
   const messagesEl = document.getElementById('messages');
-  messagesEl.innerHTML = `<div class="empty-state" id="emptyState">
-    <h3>Comece uma consulta</h3>
-    <p>Pergunte digitando, pelo microfone, ou anexe (clicando, arrastando ou colando) até 5 fotos/PDFs de exames.</p>
-    <div class="chips">
-      <div class="chip" onclick="askQuick(this)">Como funciona o protocolo CHOP?</div>
-      <div class="chip" onclick="askQuick(this)">Como interpretar leucopenia pós-quimioterapia?</div>
-      <div class="chip" onclick="askQuick(this)">Qual a dose de vincristina no CHOP?</div>
-      <div class="chip" onclick="askQuick(this)">Como estadiar um mastocitoma cutâneo?</div>
-    </div>
-  </div>`;
+  messagesEl.innerHTML = emptyStateHtml();
   loadConversationList();
   if(window.innerWidth <= 760) toggleSidebar();
 }
@@ -449,7 +468,7 @@ function toggleDictation(){
 setupDictation();
 
 function askQuick(el){
-  document.getElementById('input').value = el.textContent;
+  document.getElementById('input').value = el.dataset.q || el.textContent;
   sendMessage();
 }
 
@@ -457,7 +476,7 @@ function addMessageToDOM(role, html){
   document.getElementById('emptyState')?.remove();
   const wrap = document.createElement('div');
   wrap.className = 'msg ' + role;
-  wrap.innerHTML = `<div class="bubble">${html}</div>`;
+  wrap.innerHTML = `<div class="bubble" data-by="${role === 'assistant' ? escapeHtml(BRAND.mentorName ? 'Método ' + BRAND.mentorName : '') : ''}">${html}</div>`;
   document.getElementById('messages').appendChild(wrap);
   document.getElementById('messages').scrollTop = 999999;
   return wrap;
@@ -510,8 +529,11 @@ async function sendMessage(){
     if(tier === 'acervo' && usedSources.length){
       extra += `<div class="stamp">Fonte consultada: ${escapeHtml(usedSources.join(' · '))}</div>`;
     }
+    if(tier === 'sem_cobertura'){
+      extra += `<div class="stamp" style="border-color:var(--amber); color:#7A4E1F;">Este ponto ainda não está no material de ${escapeHtml(BRAND.mentorName)}. Leve o caso para a mentoria. Sua pergunta foi registrada.</div>`;
+    }
     if(tier === 'fallback'){
-      extra += `<div class="stamp" style="border-color:var(--amber); color:#7A4E1F;">⚠ Fora do acervo oficial — conhecimento geral / busca na internet, confirme com a mentora</div>`;
+      extra += `<div class="stamp" style="border-color:var(--amber); color:#7A4E1F;">⚠ Fora do acervo oficial — complemento externo; confirme com ${escapeHtml(BRAND.mentorName)}</div>`;
     }
     if(attachments.length){
       extra += `<div class="stamp" style="border-color:var(--amber); color:#7A4E1F;">⚠ Apoio interpretativo — não substitui revisão da mentora</div>`;
@@ -529,6 +551,7 @@ async function sendMessage(){
   document.getElementById('sendBtn').disabled = false;
 }
 
+loadBranding();
 loadConversationList();
 </script>
 </body>

@@ -50,8 +50,8 @@
 </head>
 <body>
   <div class="card">
-    <div class="eyebrow">Programa de Mentoria em Oncologia Veterinária</div>
-    <h1>Agente Oncoway</h1>
+    <div class="eyebrow" id="bEyebrow">Oncologia Veterinária</div>
+    <h1 id="bName">Agente Oncoway</h1>
 
     <div class="tabs">
       <div class="tab active" id="tabLogin" onclick="showForm('login')">Entrar</div>
@@ -78,6 +78,14 @@
     </form>
   </div>
 <script>
+(async function(){
+  try{
+    const r = await fetch('/api/branding'); if(!r.ok) return; const b = await r.json();
+    document.title = b.appName + ' — Entrar';
+    document.getElementById('bName').textContent = b.appName;
+    document.getElementById('bEyebrow').textContent = b.mentorName + (b.mentorTitle ? ' · ' + b.mentorTitle : '');
+  }catch(e){}
+})();
 function showForm(which){
   document.getElementById('tabLogin').classList.toggle('active', which==='login');
   document.getElementById('tabRegister').classList.toggle('active', which==='register');
