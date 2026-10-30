@@ -50,6 +50,8 @@
 </head>
 <body>
   <div class="card">
+    <img id="bLogo" alt="" style="display:none;max-width:200px;max-height:60px;margin:0 auto 10px;">
+    <img id="bPhoto" alt="" style="display:none;width:72px;height:72px;border-radius:50%;object-fit:cover;margin:0 auto 10px;">
     <div class="eyebrow" id="bEyebrow">Oncologia Veterinária</div>
     <h1 id="bName">Agente Oncoway</h1>
 
@@ -83,6 +85,12 @@
     const r = await fetch('/api/branding'); if(!r.ok) return; const b = await r.json();
     document.title = b.appName + ' — Entrar';
     document.getElementById('bName').textContent = b.appName;
+    const root = document.documentElement.style;
+    const dk = (h,f)=>{const n=parseInt(h.slice(1),16);return '#'+[n>>16,(n>>8)&255,n&255].map(v=>Math.round(v*(1-f)).toString(16).padStart(2,'0')).join('');};
+    if(b.primaryColor) root.setProperty('--navy', b.primaryColor);
+    if(b.accentColor){ root.setProperty('--sage', b.accentColor); root.setProperty('--sage-dark', dk(b.accentColor,0.25)); }
+    if(b.logo){ const e=document.getElementById('bLogo'); e.src=b.logo; e.style.display='block'; document.getElementById('bName').style.display='none'; }
+    if(b.photo){ const e=document.getElementById('bPhoto'); e.src=b.photo; e.style.display='block'; }
     document.getElementById('bEyebrow').textContent = b.mentorName + (b.mentorTitle ? ' · ' + b.mentorTitle : '');
   }catch(e){}
 })();

@@ -80,6 +80,16 @@
   .msg.assistant .bubble{ background:var(--card); border:1px solid var(--line); border-left:3px solid var(--sage); border-radius:2px; color:var(--ink); padding:16px 20px 14px; }
   .msg.assistant .bubble::before{ content:attr(data-by); display:block; font-family:'IBM Plex Mono',monospace; font-size:10.5px; letter-spacing:1.6px; text-transform:uppercase; color:var(--sage-dark); margin-bottom:8px; }
   .msg.assistant .bubble[data-by='']::before{ display:none; }
+  #bannerStrip{ padding:0 24px; }
+  .banner{ display:flex; gap:14px; align-items:center; background:var(--card); border:1px solid var(--line); border-left:4px solid var(--sage); border-radius:var(--r,3px); padding:12px 14px; margin-top:12px; position:relative; }
+  .banner img{ width:64px; height:64px; object-fit:cover; border-radius:var(--r,3px); flex-shrink:0; }
+  .banner .bt{ font-family:'Source Serif 4',serif; font-weight:700; font-size:15px; color:var(--navy); }
+  .banner .bb{ font-size:13px; color:var(--ink-soft); margin-top:2px; line-height:1.4; }
+  .banner a.bl{ display:inline-block; margin-top:6px; font-family:'IBM Plex Mono',monospace; font-size:11.5px; letter-spacing:.5px; text-transform:uppercase; color:#fff; background:var(--sage-dark); padding:6px 12px; border-radius:var(--r,3px); text-decoration:none; }
+  .banner .bx{ position:absolute; top:4px; right:8px; background:none; border:none; color:var(--ink-soft); cursor:pointer; font-size:14px; }
+  .brand-logo{ display:block; max-width:100%; max-height:44px; margin-bottom:10px; }
+  #quickLinks a{ display:block; font-size:12.5px; color:var(--sage-dark); text-decoration:none; padding:3px 0; }
+  #quickLinks a:hover{ text-decoration:underline; }
   .entry-cards{ display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:10px; margin-top:18px; text-align:left; }
   .entry-card{ background:var(--card); border:1px solid var(--line); border-top:3px solid var(--sage); border-radius:3px; padding:12px 14px; cursor:pointer; }
   .entry-card:hover{ border-top-color:var(--navy); }
@@ -132,11 +142,13 @@
 
   <div class="sidebar" id="sidebar">
     <div class="sidebar-header">
+      <img class="brand-logo" id="brandLogo" alt="" style="display:none;">
       <div class="sidebar-title" id="brandName">Agente Oncoway</div>
       <button class="new-chat-btn" onclick="startNewConversation()">+ Nova conversa</button>
     </div>
     <div class="conv-list" id="convList"></div>
     <div class="sidebar-footer">
+      <div id="quickLinks"></div>
       <span id="welcomeMsg"></span> · <a href="#" onclick="logout(); return false;">sair</a>
     </div>
   </div>
@@ -147,6 +159,7 @@
       <h1 class="title" id="brandTitle">Agente Oncoway</h1>
       <div class="subtitle" id="brandTagline">Raciocínio clínico em oncologia veterinária.</div>
     </div>
+    <div id="bannerStrip"></div>
 
     <div class="chat-col" id="chatCol">
       <div class="drop-overlay" id="dropOverlay">Solte aqui para anexar (até 5 arquivos)</div>
@@ -245,18 +258,60 @@ function emptyStateHtml(){
   return `<div class="empty-state" id="emptyState">
     <h3>Traga o caso. Vamos raciocinar juntos.</h3>
     <p>Descreva o paciente, cole ou anexe exames (até 5 fotos/PDFs) ou pergunte por voz. As respostas seguem o método de ${m}.</p>
-    <div class="entry-cards">
+    ${BRAND.showEntryCards === false ? '' : `<div class="entry-cards">
       <div class="entry-card" onclick="askQuick(this)" data-q="Quero discutir um caso clínico. Pode me guiar pelo raciocínio?"><b>Discutir um caso</b><span>Raciocínio clínico passo a passo, com perguntas que afinam a conduta.</span></div>
       <div class="entry-card" onclick="askQuick(this)" data-q="Quero interpretar um exame. Vou anexar o resultado."><b>Interpretar exames</b><span>Hemograma, bioquímico, citologia e imagem, lidos no contexto oncológico.</span></div>
       <div class="entry-card" onclick="askQuick(this)" data-q="Qual a dose de vincristina no CHOP?"><b>Consultar dose / protocolo</b><span>Faixas de referência com a fonte e o alerta de conferência.</span></div>
       <div class="entry-card" onclick="askQuick(this)" data-q="Como estadiar um mastocitoma cutâneo?"><b>Estadiamento e conduta</b><span>O que pedir, em que ordem e por quê.</span></div>
-    </div>
+    </div>`}
   </div>`;
+}
+function darken(hex, f){
+  const n = parseInt(hex.slice(1), 16);
+  const c = [n >> 16, (n >> 8) & 255, n & 255].map(v => Math.round(v * (1 - f)));
+  return '#' + c.map(v => v.toString(16).padStart(2, '0')).join('');
+}
+function applyTheme(b){
+  const root = document.documentElement.style;
+  if(b.primaryColor) root.setProperty('--navy', b.primaryColor);
+  if(b.accentColor){ root.setProperty('--sage', b.accentColor); root.setProperty('--sage-dark', darken(b.accentColor, 0.25)); }
+  const r = { reto:'3px', suave:'8px', redondo:'14px' }[b.radius] || '3px';
+  root.setProperty('--r', r);
+  const st = document.createElement('style');
+  st.textContent = `.bubble,.entry-card,.chip,.btn,.composer textarea,.conv-item,.new-chat-btn,.stamp,.dose-warning{ border-radius:${r}; }` +
+    (b.fontHeading === 'sans' ? `.title,.sidebar-title,.bubble h1,.bubble h2,.bubble h3,.empty-state h3,.entry-card b,.banner .bt{ font-family:'IBM Plex Sans',sans-serif; }` : '');
+  document.head.appendChild(st);
+}
+function renderBanners(list){
+  const el = document.getElementById('bannerStrip');
+  let hidden = [];
+  try{ hidden = JSON.parse(localStorage.getItem('hiddenBanners') || '[]'); }catch(e){}
+  el.innerHTML = list.filter(x => !hidden.includes(x.id)).map(x => `
+    <div class="banner">
+      ${x.image ? `<img src="${escapeHtml(x.image)}" alt="">` : ''}
+      <div>
+        ${x.title ? `<div class="bt">${escapeHtml(x.title)}</div>` : ''}
+        ${x.body ? `<div class="bb">${escapeHtml(x.body)}</div>` : ''}
+        ${x.linkUrl ? `<a class="bl" href="${escapeHtml(x.linkUrl)}" target="_blank" rel="noopener">${escapeHtml(x.linkLabel || 'Saiba mais')}</a>` : ''}
+      </div>
+      <button class="bx" title="Fechar" onclick="hideBanner('${escapeHtml(x.id)}')">✕</button>
+    </div>`).join('');
+}
+function hideBanner(id){
+  try{ const h = JSON.parse(localStorage.getItem('hiddenBanners') || '[]'); h.push(id); localStorage.setItem('hiddenBanners', JSON.stringify(h)); }catch(e){}
+  renderBanners(BRAND.banners || []);
+}
+function renderQuickLinks(list){
+  document.getElementById('quickLinks').innerHTML = list.map(l => `<a href="${escapeHtml(l.url)}" target="_blank" rel="noopener">${escapeHtml(l.label)} ↗</a>`).join('');
 }
 async function loadBranding(){
   try{
     const r = await fetch('/api/branding'); if(!r.ok) return;
     BRAND = await r.json();
+    applyTheme(BRAND);
+    renderBanners(BRAND.banners || []);
+    renderQuickLinks(BRAND.quickLinks || []);
+    if(BRAND.logo){ const lg = document.getElementById('brandLogo'); lg.src = BRAND.logo; lg.style.display = 'block'; }
     document.title = BRAND.appName;
     document.getElementById('brandName').textContent = BRAND.appName;
     document.getElementById('brandEyebrow').textContent = BRAND.mentorName + (BRAND.mentorTitle ? ' · ' + BRAND.mentorTitle : '');
