@@ -133,6 +133,27 @@ async function initDb() {
       updated_at TIMESTAMPTZ DEFAULT now()
     );
   `);
+  // Aparência: imagens (logo, foto da mentora, banners) e banners editáveis pelo /admin.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS app_assets (
+      key TEXT PRIMARY KEY,
+      mime TEXT NOT NULL,
+      data TEXT NOT NULL,
+      updated_at TIMESTAMPTZ DEFAULT now()
+    );
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS app_banners (
+      id TEXT PRIMARY KEY,
+      title TEXT,
+      body TEXT,
+      link_url TEXT,
+      link_label TEXT,
+      active BOOLEAN DEFAULT TRUE,
+      position INT DEFAULT 0,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
+  `);
   // Semeia o acervo de exemplo na primeira vez, se a tabela estiver vazia e existir um docs.json local.
   const { rows } = await pool.query('SELECT COUNT(*)::int AS count FROM docs');
   if (rows[0].count === 0 && fs.existsSync(DOCS_PATH)) {
@@ -435,8 +456,22 @@ function requireStudentApi(req, res, next) {
 
 // Rotas públicas de login/cadastro (sem exigir sessão)
 app.get('/api/branding', async (req, res) => {
-  const c = await getSettings();
-  res.json({ appName: c.appName, tagline: c.tagline, mentorName: c.mentorName, mentorTitle: c.mentorTitle });
+  try { res.json(await getBranding()); }
+  catch (e) { console.error(e); res.status(500).json({ error: 'branding' }); }
+});
+
+// Imagens de marca (públicas: o login precisa mostrar o logo antes do acesso).
+app.get('/brand/:key', async (req, res) => {
+  try {
+    if (!validAssetKey(req.params.key)) return res.status(404).end();
+    const a = await getAsset(req.params.key);
+    if (!a) return res.status(404).end();
+    res.set('Content-Type', a.mime);
+    res.set('Cache-Control', 'public, max-age=86400');
+    res.set('X-Content-Type-Options', 'nosniff');
+    res.set('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox");
+    res.send(Buffer.from(a.data, 'base64'));
+  } catch (e) { res.status(500).end(); }
 });
 
 app.get('/login.html', (req, res) => {
@@ -736,8 +771,24 @@ const DEFAULT_SETTINGS = {
     'Resumo do caso, Raciocínio, Conduta sugerida e Pontos de atenção.',
   // acervo = só o material da mentora; acervo_web = acervo e, se faltar, busca limitada na internet;
   // aberto = comportamento antigo (conhecimento geral e internet livres).
-  searchMode: 'acervo_web'
+  searchMode: 'acervo_web',
+  // Aparência (todos opcionais; sem configuração vale o visual atual)
+  primaryColor: '#223449',
+  accentColor: '#5C8374',
+  fontHeading: 'serif',      // serif | sans
+  radius: 'reto',            // reto | suave | redondo
+  showEntryCards: 'sim',     // sim | nao
+  quickLinks: '[]'           // JSON: [{label,url}] até 6
 };
+const HEX = /^#[0-9a-fA-F]{6}$/;
+const OPTIONS = { fontHeading: ['serif', 'sans'], radius: ['reto', 'suave', 'redondo'], showEntryCards: ['sim', 'nao'] };
+function sanitizeQuickLinks(raw) {
+  let arr = [];
+  try { arr = JSON.parse(raw); } catch (e) {}
+  if (!Array.isArray(arr)) arr = [];
+  return JSON.stringify(arr.slice(0, 6).map(l => ({ label: String(l.label || '').trim().slice(0, 40), url: String(l.url || '').trim().slice(0, 300) }))
+    .filter(l => l.label && /^https?:\/\//i.test(l.url)));
+}
 let _settingsCache = null, _settingsAt = 0;
 
 async function getSettings() {
@@ -756,17 +807,24 @@ async function getSettings() {
     if (typeof saved[k] === 'string' && saved[k].trim()) merged[k] = saved[k].trim();
   }
   if (!SEARCH_MODES.includes(merged.searchMode)) merged.searchMode = DEFAULT_SETTINGS.searchMode;
+  for (const k of ['primaryColor', 'accentColor']) if (!HEX.test(merged[k])) merged[k] = DEFAULT_SETTINGS[k];
+  for (const [k, list] of Object.entries(OPTIONS)) if (!list.includes(merged[k])) merged[k] = DEFAULT_SETTINGS[k];
+  merged.quickLinks = sanitizeQuickLinks(merged.quickLinks);
   _settingsCache = merged; _settingsAt = Date.now();
   return merged;
 }
 
 async function saveSettings(input) {
   const clean = {};
-  const limits = { appName: 60, tagline: 160, mentorName: 80, mentorTitle: 100, voice: 1500, searchMode: 20 };
+  const limits = { appName: 60, tagline: 160, mentorName: 80, mentorTitle: 100, voice: 1500, searchMode: 20,
+    primaryColor: 7, accentColor: 7, fontHeading: 10, radius: 10, showEntryCards: 3, quickLinks: 2500 };
   for (const k of Object.keys(DEFAULT_SETTINGS)) {
     if (typeof input[k] === 'string') clean[k] = input[k].trim().slice(0, limits[k]);
   }
   if (clean.searchMode && !SEARCH_MODES.includes(clean.searchMode)) delete clean.searchMode;
+  for (const k of ['primaryColor', 'accentColor']) if (clean[k] !== undefined && !HEX.test(clean[k])) delete clean[k];
+  for (const [k, list] of Object.entries(OPTIONS)) if (clean[k] !== undefined && !list.includes(clean[k])) delete clean[k];
+  if (clean.quickLinks !== undefined) clean.quickLinks = sanitizeQuickLinks(input.quickLinks);
   if (useDb) {
     for (const [k, v] of Object.entries(clean)) {
       await pool.query(
@@ -778,8 +836,112 @@ async function saveSettings(input) {
     try { if (fs.existsSync(SETTINGS_PATH)) saved = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8')); } catch (e) {}
     fs.writeFileSync(SETTINGS_PATH, JSON.stringify({ ...saved, ...clean }, null, 2));
   }
-  _settingsCache = null;
+  _settingsCache = null; _brandingCache = null;
   return getSettings();
+}
+
+// ---------- Imagens (logo, foto, banners) e banners ----------
+const ASSETS_PATH = path.join(__dirname, 'assets.json');
+const BANNERS_PATH = path.join(__dirname, 'banners.json');
+const ASSET_KEYS = ['logo', 'logoLight', 'photo'];
+const ASSET_MIMES = ['image/png', 'image/jpeg', 'image/webp', 'image/svg+xml'];
+const ASSET_MAX_BYTES = 1.5 * 1024 * 1024;
+const readJson = (p, fallback) => { try { return fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : fallback; } catch (e) { return fallback; } };
+
+function parseDataUrl(dataUrl) {
+  const m = /^data:([a-z0-9.+\/-]+);base64,([A-Za-z0-9+\/=]+)$/i.exec(String(dataUrl || ''));
+  if (!m || !ASSET_MIMES.includes(m[1].toLowerCase())) return null;
+  const bytes = Math.floor(m[2].length * 3 / 4);
+  if (bytes > ASSET_MAX_BYTES) return null;
+  return { mime: m[1].toLowerCase(), data: m[2] };
+}
+function validAssetKey(key) { return ASSET_KEYS.includes(key) || /^banner-[a-z0-9]{6,20}$/.test(key); }
+
+async function setAsset(key, mime, data) {
+  if (useDb) {
+    await pool.query(`INSERT INTO app_assets (key, mime, data) VALUES ($1,$2,$3)
+      ON CONFLICT (key) DO UPDATE SET mime=EXCLUDED.mime, data=EXCLUDED.data, updated_at=now()`, [key, mime, data]);
+  } else {
+    const all = readJson(ASSETS_PATH, {});
+    all[key] = { mime, data, updated: Date.now() };
+    fs.writeFileSync(ASSETS_PATH, JSON.stringify(all));
+  }
+  _brandingCache = null;
+}
+async function getAsset(key) {
+  if (useDb) {
+    const { rows } = await pool.query('SELECT mime, data FROM app_assets WHERE key=$1', [key]);
+    return rows[0] || null;
+  }
+  return readJson(ASSETS_PATH, {})[key] || null;
+}
+async function deleteAsset(key) {
+  if (useDb) await pool.query('DELETE FROM app_assets WHERE key=$1', [key]);
+  else { const all = readJson(ASSETS_PATH, {}); delete all[key]; fs.writeFileSync(ASSETS_PATH, JSON.stringify(all)); }
+  _brandingCache = null;
+}
+// Mapa chave -> versão (timestamp), sem trazer os bytes das imagens.
+async function assetVersions() {
+  if (useDb) {
+    const { rows } = await pool.query('SELECT key, (extract(epoch from updated_at)*1000)::bigint AS v FROM app_assets');
+    return Object.fromEntries(rows.map(r => [r.key, Number(r.v)]));
+  }
+  const all = readJson(ASSETS_PATH, {});
+  return Object.fromEntries(Object.entries(all).map(([k, v]) => [k, v.updated || 1]));
+}
+
+async function listBanners() {
+  if (useDb) {
+    const { rows } = await pool.query('SELECT id, title, body, link_url, link_label, active, position FROM app_banners ORDER BY position, created_at');
+    return rows;
+  }
+  return readJson(BANNERS_PATH, []);
+}
+async function saveBanner(b) {
+  const clean = {
+    id: b.id && /^banner-[a-z0-9]{6,20}$/.test(b.id) ? b.id : 'banner-' + crypto.randomBytes(5).toString('hex'),
+    title: String(b.title || '').trim().slice(0, 120),
+    body: String(b.body || '').trim().slice(0, 400),
+    link_url: /^https?:\/\//i.test(String(b.link_url || '').trim()) ? String(b.link_url).trim().slice(0, 300) : '',
+    link_label: String(b.link_label || '').trim().slice(0, 40),
+    active: b.active !== false,
+    position: Number.isFinite(+b.position) ? +b.position : 0
+  };
+  if (useDb) {
+    await pool.query(`INSERT INTO app_banners (id,title,body,link_url,link_label,active,position) VALUES ($1,$2,$3,$4,$5,$6,$7)
+      ON CONFLICT (id) DO UPDATE SET title=EXCLUDED.title, body=EXCLUDED.body, link_url=EXCLUDED.link_url,
+      link_label=EXCLUDED.link_label, active=EXCLUDED.active, position=EXCLUDED.position`,
+      [clean.id, clean.title, clean.body, clean.link_url, clean.link_label, clean.active, clean.position]);
+  } else {
+    const all = readJson(BANNERS_PATH, []).filter(x => x.id !== clean.id);
+    all.push(clean); fs.writeFileSync(BANNERS_PATH, JSON.stringify(all));
+  }
+  _brandingCache = null;
+  return clean;
+}
+async function deleteBanner(id) {
+  if (useDb) await pool.query('DELETE FROM app_banners WHERE id=$1', [id]);
+  else fs.writeFileSync(BANNERS_PATH, JSON.stringify(readJson(BANNERS_PATH, []).filter(x => x.id !== id)));
+  await deleteAsset(id);
+}
+
+let _brandingCache = null, _brandingAt = 0;
+async function getBranding() {
+  if (_brandingCache && Date.now() - _brandingAt < 60 * 1000) return _brandingCache;
+  const [c, versions, banners] = await Promise.all([getSettings(), assetVersions(), listBanners()]);
+  const img = k => (versions[k] ? `/brand/${k}?v=${versions[k]}` : null);
+  _brandingCache = {
+    appName: c.appName, tagline: c.tagline, mentorName: c.mentorName, mentorTitle: c.mentorTitle,
+    primaryColor: c.primaryColor, accentColor: c.accentColor, fontHeading: c.fontHeading, radius: c.radius,
+    showEntryCards: c.showEntryCards === 'sim',
+    quickLinks: JSON.parse(c.quickLinks),
+    logo: img('logo'), logoLight: img('logoLight'), photo: img('photo'),
+    banners: banners.filter(b => b.active !== false).map(b => ({
+      id: b.id, title: b.title, body: b.body, linkUrl: b.link_url, linkLabel: b.link_label, image: img(b.id)
+    }))
+  };
+  _brandingAt = Date.now();
+  return _brandingCache;
 }
 
 const SEM_COBERTURA = 'SEM_COBERTURA_NO_ACERVO';
@@ -1053,6 +1215,32 @@ app.get('/api/admin/settings', requireAdmin, async (req, res) => {
 app.post('/api/admin/settings', requireAdmin, async (req, res) => {
   try { res.json({ ok: true, settings: await saveSettings(req.body || {}) }); }
   catch (e) { console.error(e); res.status(500).json({ error: 'Não foi possível salvar.' }); }
+});
+
+app.post('/api/admin/assets/:key', requireAdmin, async (req, res) => {
+  const key = req.params.key;
+  if (!validAssetKey(key)) return res.status(400).json({ error: 'Chave inválida.' });
+  const parsed = parseDataUrl(req.body && req.body.dataUrl);
+  if (!parsed) return res.status(400).json({ error: 'Imagem inválida ou maior que 1,5 MB (use PNG, JPG, WebP ou SVG).' });
+  await setAsset(key, parsed.mime, parsed.data);
+  res.json({ ok: true });
+});
+app.delete('/api/admin/assets/:key', requireAdmin, async (req, res) => {
+  if (!validAssetKey(req.params.key)) return res.status(400).json({ error: 'Chave inválida.' });
+  await deleteAsset(req.params.key);
+  res.json({ ok: true });
+});
+app.get('/api/admin/banners', requireAdmin, async (req, res) => {
+  const versions = await assetVersions();
+  res.json((await listBanners()).map(b => ({ ...b, image: versions[b.id] ? `/brand/${b.id}?v=${versions[b.id]}` : null })));
+});
+app.post('/api/admin/banners', requireAdmin, async (req, res) => {
+  res.json({ ok: true, banner: await saveBanner(req.body || {}) });
+});
+app.delete('/api/admin/banners/:id', requireAdmin, async (req, res) => {
+  if (!/^banner-[a-z0-9]{6,20}$/.test(req.params.id)) return res.status(400).json({ error: 'id inválido' });
+  await deleteBanner(req.params.id);
+  res.json({ ok: true });
 });
 
 app.get('/api/admin/analytics', requireAdmin, async (req, res) => {
