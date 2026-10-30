@@ -125,6 +125,14 @@ async function initDb() {
       created_at TIMESTAMPTZ DEFAULT now()
     );
   `);
+  // Configurações do app (identidade da mentora, modo de busca na internet) — editáveis pelo /admin.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT,
+      updated_at TIMESTAMPTZ DEFAULT now()
+    );
+  `);
   // Semeia o acervo de exemplo na primeira vez, se a tabela estiver vazia e existir um docs.json local.
   const { rows } = await pool.query('SELECT COUNT(*)::int AS count FROM docs');
   if (rows[0].count === 0 && fs.existsSync(DOCS_PATH)) {
@@ -426,6 +434,11 @@ function requireStudentApi(req, res, next) {
 }
 
 // Rotas públicas de login/cadastro (sem exigir sessão)
+app.get('/api/branding', async (req, res) => {
+  const c = await getSettings();
+  res.json({ appName: c.appName, tagline: c.tagline, mentorName: c.mentorName, mentorTitle: c.mentorTitle });
+});
+
 app.get('/login.html', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'login.html'));
 });
@@ -626,7 +639,7 @@ async function loadDoses() {
 async function getAnalytics() {
   if (!useDb) return { dbEnabled: false };
 
-  const [studentsRes, tierRes, materialsRes, topicsRes, dailyRes] = await Promise.all([
+  const [studentsRes, tierRes, materialsRes, topicsRes, dailyRes, uncoveredRes] = await Promise.all([
     pool.query(`
       SELECT s.id, s.name, s.email, s.last_login, s.login_count,
         COALESCE(mc.msg_count, 0)::int AS msg_count,
@@ -677,6 +690,18 @@ async function getAnalytics() {
       WHERE role = 'user' AND created_at > now() - interval '14 days'
       GROUP BY date_trunc('day', created_at)
       ORDER BY date_trunc('day', created_at)
+    `),
+    pool.query(`
+      SELECT q.content AS question, to_char(m.created_at, 'DD/MM HH24:MI') AS at
+      FROM messages m
+      CROSS JOIN LATERAL (
+        SELECT u.content FROM messages u
+        WHERE u.conversation_id = m.conversation_id AND u.role = 'user' AND u.created_at <= m.created_at
+        ORDER BY u.created_at DESC LIMIT 1
+      ) q
+      WHERE m.role = 'assistant' AND m.tier = 'sem_cobertura'
+      ORDER BY m.created_at DESC
+      LIMIT 25
     `)
   ]);
 
@@ -686,13 +711,75 @@ async function getAnalytics() {
     tierDistribution: tierRes.rows,
     topMaterials: materialsRes.rows,
     topTopics: topicsRes.rows,
-    dailyActivity: dailyRes.rows
+    dailyActivity: dailyRes.rows,
+    uncovered: uncoveredRes.rows
   };
 }
 
 async function deleteDoseEntry(id) {
   if (!useDb) return;
   await pool.query('DELETE FROM doc_doses WHERE id=$1', [id]);
+}
+
+// ---------- Configurações do app (identidade + modo de busca) ----------
+// Tudo aditivo: sem nenhuma configuração salva, valem os padrões abaixo.
+const SETTINGS_PATH = path.join(__dirname, 'settings.json');
+const SEARCH_MODES = ['acervo', 'acervo_web', 'aberto'];
+const DEFAULT_SETTINGS = {
+  appName: 'Agente Oncoway',
+  tagline: 'Raciocínio clínico em oncologia veterinária, no método da sua mentora',
+  mentorName: 'Joice Faria',
+  mentorTitle: 'Médica-veterinária oncologista',
+  // Como a mentora explica: vira parte do prompt. Ela pode reescrever com as próprias palavras.
+  voice: 'Fale como a mentora falaria numa discussão de caso: direta, didática e clínica, sem formalidade excessiva. ' +
+    'Priorize o raciocínio (por que decidir assim) antes da regra decorada. Organize casos clínicos em: ' +
+    'Resumo do caso, Raciocínio, Conduta sugerida e Pontos de atenção.',
+  // acervo = só o material da mentora; acervo_web = acervo e, se faltar, busca limitada na internet;
+  // aberto = comportamento antigo (conhecimento geral e internet livres).
+  searchMode: 'acervo_web'
+};
+let _settingsCache = null, _settingsAt = 0;
+
+async function getSettings() {
+  if (_settingsCache && Date.now() - _settingsAt < 60 * 1000) return _settingsCache;
+  let saved = {};
+  try {
+    if (useDb) {
+      const { rows } = await pool.query('SELECT key, value FROM app_settings');
+      rows.forEach(r => { saved[r.key] = r.value; });
+    } else if (fs.existsSync(SETTINGS_PATH)) {
+      saved = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
+    }
+  } catch (e) { console.error('Falha ao ler configurações:', e.message); }
+  const merged = { ...DEFAULT_SETTINGS };
+  for (const k of Object.keys(DEFAULT_SETTINGS)) {
+    if (typeof saved[k] === 'string' && saved[k].trim()) merged[k] = saved[k].trim();
+  }
+  if (!SEARCH_MODES.includes(merged.searchMode)) merged.searchMode = DEFAULT_SETTINGS.searchMode;
+  _settingsCache = merged; _settingsAt = Date.now();
+  return merged;
+}
+
+async function saveSettings(input) {
+  const clean = {};
+  const limits = { appName: 60, tagline: 160, mentorName: 80, mentorTitle: 100, voice: 1500, searchMode: 20 };
+  for (const k of Object.keys(DEFAULT_SETTINGS)) {
+    if (typeof input[k] === 'string') clean[k] = input[k].trim().slice(0, limits[k]);
+  }
+  if (clean.searchMode && !SEARCH_MODES.includes(clean.searchMode)) delete clean.searchMode;
+  if (useDb) {
+    for (const [k, v] of Object.entries(clean)) {
+      await pool.query(
+        `INSERT INTO app_settings (key, value) VALUES ($1,$2)
+         ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`, [k, v]);
+    }
+  } else {
+    let saved = {};
+    try { if (fs.existsSync(SETTINGS_PATH)) saved = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8')); } catch (e) {}
+    fs.writeFileSync(SETTINGS_PATH, JSON.stringify({ ...saved, ...clean }, null, 2));
+  }
+  _settingsCache = null;
+  return getSettings();
 }
 
 const SEM_COBERTURA = 'SEM_COBERTURA_NO_ACERVO';
@@ -706,29 +793,41 @@ const ESTILO_RESPOSTA = `Antes de responder, identifique o tipo da pergunta:
 // geral + interpretação de exame + memória de conversa numa só chamada à IA — mais rápido,
 // mais barato, e funciona naturalmente com perguntas de acompanhamento ("e sobre isso que
 // perguntei antes?").
-const SYSTEM_PROMPT_MAIN = `Você é o Agente Oncoway, assistente de apoio a um programa de mentoria em oncologia veterinária.
-Você está em uma CONVERSA CONTÍNUA com o aluno — pode haver perguntas de acompanhamento referentes a mensagens
-anteriores da mesma conversa; use esse histórico normalmente, do jeito que um mentor faria numa conversa real.
+function buildSystemPrompt(cfg) {
+  const mentor = cfg.mentorName;
+  const modeRule = {
+    acervo: `2) Responda SOMENTE com base no CONTEXTO do acervo (o material de ${mentor}). Você NÃO tem busca na internet. ` +
+      `Se o contexto não cobrir a pergunta, não invente: diga com clareza que esse ponto ainda não está no material de ${mentor}, ` +
+      `ofereça no máximo uma orientação geral breve e prudente, marcada como "orientação geral, fora do material", e sugira levar o caso à mentoria.`,
+    acervo_web: `2) Priorize o CONTEXTO do acervo (o material de ${mentor}). Só se ele for claramente insuficiente, complemente com ` +
+      `conhecimento geral e, se for realmente necessário (dado atual ou muito específico), com NO MÁXIMO uma ou duas buscas na internet. ` +
+      `Deixe explícito qual parte vem do material de ${mentor} e qual é complemento externo.`,
+    aberto: `2) Se o CONTEXTO do acervo for insuficiente, responda com conhecimento geral de medicina veterinária e, se precisar de algo ` +
+      `atual ou específico, use a busca na internet — deixando claro que essa parte não vem do material oficial do curso.`
+  }[cfg.searchMode];
+  const tagRule = cfg.searchMode === 'acervo'
+    ? `[[FONTE:ACERVO]] se a resposta se baseou no acervo, ou [[FONTE:SEM_COBERTURA]] se o acervo não cobria a pergunta`
+    : `[[FONTE:ACERVO]] se a resposta se baseou principalmente no acervo, [[FONTE:GERAL]] se baseou-se em conhecimento geral e/ou internet, ` +
+      `ou [[FONTE:SEM_COBERTURA]] se o acervo não cobria a pergunta e a resposta é só uma orientação geral breve`;
+  return `Você é o ${cfg.appName}, o assistente de raciocínio clínico que carrega o método de ${mentor}${cfg.mentorTitle ? ' (' + cfg.mentorTitle + ')' : ''} em oncologia veterinária.
+Você NÃO é um chatbot genérico: fale em nome do método dela, em primeira pessoa do plural quando fizer sentido ("no nosso método…"), sem fingir ser a própria ${mentor}.
+Você está em uma CONVERSA CONTÍNUA — use o histórico normalmente para perguntas de acompanhamento.
 
-Cada pergunta do aluno pode vir acompanhada de CONTEXTO do acervo oficial do curso, e/ou de imagens e textos de
-exames anexados. Você também pode ter acesso a uma ferramenta de busca na internet.
+VOZ E ESTILO (definidos pela mentora):
+${cfg.voice}
+Evite o tom de assistente genérico: nada de "Claro!", "Ótima pergunta!", listas de tópicos soltos sem raciocínio ou avisos repetitivos.
+
+Cada pergunta pode vir com CONTEXTO do acervo oficial, e/ou imagens e textos de exames anexados.
 
 Regras obrigatórias:
-1) Se o CONTEXTO do acervo for suficiente para responder, baseie-se nele e cite a fonte entre parênteses, ex: (Fonte: Aula 3 — Linfoma).
-2) Se o contexto não for suficiente (ou não houver contexto), responda com seu conhecimento geral de medicina
-   veterinária e, se precisar de algo atual ou específico, use a busca na internet — deixando claro na resposta
-   que essa parte não vem do material oficial do curso.
-3) Se houver imagem(ns) ou texto(s) de exame anexado(s), interprete-os como apoio ao raciocínio clínico do aluno,
-   deixando claro que não é um laudo definitivo e que o caso deve ser revisado com a mentora. Se a imagem/texto não
-   permitir uma leitura clara, diga isso e peça os dados que faltam, em vez de supor ou inventar achados.
+1) Se o CONTEXTO do acervo for suficiente, baseie-se nele e cite a fonte entre parênteses, ex: (Fonte: Aula 3 — Linfoma).
+${modeRule}
+3) Se houver imagem(ns) ou texto(s) de exame, interprete-os como apoio ao raciocínio clínico, deixando claro que não é laudo definitivo e que o caso deve ser revisado com ${mentor}. Se não permitirem leitura clara, diga isso e peça os dados que faltam, em vez de supor.
 4) ${ESTILO_RESPOSTA}
-5) Sempre que mencionar dose de medicamento, inclua: "⚠ Confirme esta dose com a mentora antes de qualquer uso clínico."
-6) IMPORTANTE: sempre conclua seu raciocínio por completo — nunca interrompa a resposta no meio. Se a resposta for
-   longa, isso é aceitável; o que não pode acontecer é parar antes de fechar a ideia.
-7) Ao FINAL de cada resposta, em uma linha própria e por último, escreva EXATAMENTE uma destas duas tags (nada mais
-   nessa linha, sem explicação): [[FONTE:ACERVO]] se a resposta se baseou principalmente no acervo do curso, ou
-   [[FONTE:GERAL]] se baseou-se em conhecimento geral e/ou busca na internet. Essa tag é só para controle interno
-   do sistema — o aluno não vê essa parte.`;
+5) Sempre que mencionar dose de medicamento, inclua: "⚠ Confirme esta dose com ${mentor} antes de qualquer uso clínico."
+6) Sempre conclua o raciocínio por completo — nunca interrompa a resposta no meio.
+7) Ao FINAL, em linha própria e por último, escreva EXATAMENTE uma tag (nada mais na linha): ${tagRule}. É só controle interno; o aluno não vê.`;
+}
 
 async function callClaude({ system, messages, tools, maxTokens }) {
   const body = {
@@ -738,7 +837,7 @@ async function callClaude({ system, messages, tools, maxTokens }) {
     messages
   };
   if (tools) body.tools = tools;
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
+  const response = await fetch(process.env.ANTHROPIC_API_URL || 'https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -784,10 +883,13 @@ async function askClaudeCore(history, question, contextBlock, { images, examText
   const turnContent = buildTurnContent(question, contextBlock, images, examTexts);
   const messages = [...history, { role: 'user', content: turnContent }];
 
+  const cfg = await getSettings();
+  const tools = cfg.searchMode === 'acervo' ? undefined
+    : [{ type: 'web_search_20250305', name: 'web_search', max_uses: cfg.searchMode === 'acervo_web' ? 2 : 5 }];
   const raw = await callClaude({
-    system: SYSTEM_PROMPT_MAIN,
+    system: buildSystemPrompt(cfg),
     messages,
-    tools: [{ type: 'web_search_20250305', name: 'web_search' }],
+    tools,
     maxTokens: 2000
   });
 
@@ -795,11 +897,12 @@ async function askClaudeCore(history, question, contextBlock, { images, examText
     return { answer: 'Desculpe, tive um problema para consultar o acervo agora. Tente novamente em instantes.', tier: 'erro' };
   }
 
-  const tagMatch = raw.match(/\[\[FONTE:(ACERVO|GERAL)\]\]\s*$/i);
+  const tagMatch = raw.match(/\[\[FONTE:(ACERVO|GERAL|SEM_COBERTURA)\]\]\s*$/i);
   let tier = 'fallback';
   let answer = raw;
   if (tagMatch) {
-    tier = tagMatch[1].toUpperCase() === 'ACERVO' ? 'acervo' : 'fallback';
+    const t = tagMatch[1].toUpperCase();
+    tier = t === 'ACERVO' ? 'acervo' : t === 'SEM_COBERTURA' ? 'sem_cobertura' : 'fallback';
     answer = raw.slice(0, tagMatch.index).trim();
   }
   return { answer, tier };
@@ -942,6 +1045,14 @@ app.post('/api/admin/catalog-batch', requireAdmin, async (req, res) => {
   }
   const status = await getCatalogStatus();
   res.json({ processed, ...status });
+});
+
+app.get('/api/admin/settings', requireAdmin, async (req, res) => {
+  res.json({ settings: await getSettings(), defaults: DEFAULT_SETTINGS, modes: SEARCH_MODES });
+});
+app.post('/api/admin/settings', requireAdmin, async (req, res) => {
+  try { res.json({ ok: true, settings: await saveSettings(req.body || {}) }); }
+  catch (e) { console.error(e); res.status(500).json({ error: 'Não foi possível salvar.' }); }
 });
 
 app.get('/api/admin/analytics', requireAdmin, async (req, res) => {
