@@ -362,6 +362,19 @@
         <label class="radio"><input type="radio" name="cfgMode" value="acervo_web"> <b>Acervo primeiro (recomendado).</b> Internet só se o acervo for insuficiente, no máximo 2 buscas por resposta, sempre sinalizado.</label>
         <label class="radio"><input type="radio" name="cfgMode" value="aberto"> <b>Aberto.</b> Conhecimento geral e internet livres (comportamento antigo).</label>
       </div>
+      <h2>Cadastro aberto e termos</h2>
+      <div class="panel">
+        <div class="status" id="mailStatus" style="margin:0 0 10px;"></div>
+        <label class="fl">Cadastro aberto para novos usuários (plano Grátis)</label>
+        <select id="cfgSignup"><option value="nao">Fechado: só quem é convidado entra</option><option value="sim">Aberto: qualquer pessoa pode criar conta grátis</option></select>
+        <label class="fl">E-mail de contato (aparece no app)</label>
+        <input type="text" id="cfgSupport" placeholder="contato@vetjoicefaria.com">
+        <label class="fl">Termos de uso (<a href="/termos" target="_blank">ver página</a>)</label>
+        <textarea id="cfgTerms" style="min-height:200px;"></textarea>
+        <label class="fl">Política de privacidade (<a href="/privacidade" target="_blank">ver página</a>)</label>
+        <textarea id="cfgPrivacy" style="min-height:200px;"></textarea>
+        <div class="status" style="margin-top:-4px;">Os textos iniciais são modelos. Substitua pelo texto aprovado pela Joice e revisado por um advogado antes de abrir o cadastro.</div>
+      </div>
       <div style="margin-top:14px;"><button class="btn" onclick="saveConfig()">Salvar configurações</button> <button class="btn" style="background:none;color:var(--sage-dark);border:1px solid var(--sage-dark);" onclick="resetConfig()">Restaurar padrões</button></div>
       <div class="status" id="cfgStatus"></div>
     </div>
@@ -443,7 +456,7 @@ async function loadDocs(){
 
 let allDocs = [], docPage = 1;
 const PAGE_SIZE = 20;
-function renderDocs(docs){ allDocs = docs; drawDocs(); }
+function renderDocs(docs){ allDocs = Array.isArray(docs) ? docs : []; drawDocs(); }
 function pagerHtml(page, pages, fnPrev, fnNext){
   if(pages <= 1) return '';
   return `<button class="btn ghost" ${page<=1?'disabled':''} onclick="${fnPrev}">‹ Anterior</button><span>${page} de ${pages}</span><button class="btn ghost" ${page>=pages?'disabled':''} onclick="${fnNext}">Próxima ›</button>`;
@@ -643,7 +656,7 @@ async function loadStudents(){
 }
 
 let allStudents = [], stPage = 1;
-function renderStudents(students){ allStudents = students; drawStudents(); }
+function renderStudents(students){ allStudents = Array.isArray(students) ? students : []; drawStudents(); }
 function studentMatches(s, filter){
   const day = 86400000, last = s.lastLogin ? new Date(s.lastLogin).getTime() : null;
   if(filter === 'pendente') return !s.passwordSet;
@@ -669,8 +682,10 @@ function drawStudents(){
   el.innerHTML = '';
   if(!slice.length){ el.innerHTML = `<div class="status">${allStudents.length ? 'Nenhum aluno encontrado com esses filtros.' : 'Nenhum aluno cadastrado ainda.'}</div>`; }
   slice.forEach(s=>{
-    const badge = !s.passwordSet ? '<span class="badge warn">aguardando primeiro acesso</span>'
+    let badge = !s.passwordSet ? '<span class="badge warn">aguardando primeiro acesso</span>'
       : (s.lastLogin ? '<span class="badge">ativo</span>' : '<span class="badge warn">nunca entrou</span>');
+    if(s.source === 'cadastro') badge += '<span class="badge">cadastro próprio</span>';
+    if(s.emailVerified === false) badge += '<span class="badge warn">e-mail não confirmado</span>';
     const access = s.lastLogin ? `último acesso: ${timeAgoAnalytics(s.lastLogin)} · ${s.loginCount||0} login(s)` : 'sem acessos ainda';
     const phoneLabel = s.phone ? `WhatsApp: ${escapeHtml(s.phone)}` : 'sem WhatsApp';
     const card = document.createElement('div');
@@ -855,12 +870,19 @@ function fillConfig(c){
   document.getElementById('cfgMentorTitle').value = c.mentorTitle;
   document.getElementById('cfgVoice').value = c.voice;
   document.querySelectorAll('input[name=cfgMode]').forEach(r=>{ r.checked = r.value === c.searchMode; });
+  document.getElementById('cfgSignup').value = c.signupOpen;
+  document.getElementById('cfgSupport').value = c.supportEmail || '';
+  document.getElementById('cfgTerms').value = c.termsText;
+  document.getElementById('cfgPrivacy').value = c.privacyText;
 }
 async function loadConfig(){
   const res = await fetch('/api/admin/settings');
   const d = await res.json();
   cfgDefaults = d.defaults;
   fillConfig(d.settings);
+  document.getElementById('mailStatus').innerHTML = d.mail && d.mail.configured
+    ? 'E-mail de envio configurado ✓ via ' + escapeHtml(d.mail.provider || '') + ' (' + escapeHtml(d.mail.from) + ')'
+    : '⚠ O envio de e-mail ainda não está configurado no servidor (variáveis BREVO_API_KEY e MAIL_FROM). Sem isso o cadastro aberto não funciona, mesmo ligado.';
 }
 async function saveConfig(){
   const mode = document.querySelector('input[name=cfgMode]:checked');
@@ -870,7 +892,11 @@ async function saveConfig(){
     mentorName: document.getElementById('cfgMentorName').value,
     mentorTitle: document.getElementById('cfgMentorTitle').value,
     voice: document.getElementById('cfgVoice').value,
-    searchMode: mode ? mode.value : ''
+    searchMode: mode ? mode.value : '',
+    signupOpen: document.getElementById('cfgSignup').value,
+    supportEmail: document.getElementById('cfgSupport').value,
+    termsText: document.getElementById('cfgTerms').value,
+    privacyText: document.getElementById('cfgPrivacy').value
   };
   const st = document.getElementById('cfgStatus');
   st.textContent = 'Salvando...';
@@ -879,7 +905,7 @@ async function saveConfig(){
   if(d.ok){ fillConfig(d.settings); st.textContent = 'Salvo ✓ (vale para as próximas respostas)'; }
   else st.textContent = d.error || 'Erro ao salvar.';
 }
-function resetConfig(){ if(cfgDefaults && confirm('Restaurar os textos e o modo padrão? Clique em Salvar depois.')) fillConfig(cfgDefaults); }
+function resetConfig(){ if(cfgDefaults && confirm('Restaurar identidade e modo de busca padrão? Clique em Salvar depois. Os termos não são alterados.')){ const keep = { signupOpen: document.getElementById('cfgSignup').value, supportEmail: document.getElementById('cfgSupport').value, termsText: document.getElementById('cfgTerms').value, privacyText: document.getElementById('cfgPrivacy').value }; fillConfig({ ...cfgDefaults, ...keep }); } }
 
 // ---------- Planos e custos ----------
 const PLAN_ORDER = ['gratis', 'assinante', 'mentoria'];
