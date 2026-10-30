@@ -222,7 +222,7 @@ function saveStudentsFile(students) {
 
 async function loadStudents() {
   if (useDb) {
-    const { rows } = await pool.query('SELECT id, name, email, password_set AS "passwordSet", salt, hash FROM students ORDER BY created_at ASC');
+    const { rows } = await pool.query('SELECT id, name, email, phone, password_set AS "passwordSet", salt, hash, last_login AS "lastLogin", COALESCE(login_count,0) AS "loginCount", created_at AS "createdAt" FROM students ORDER BY created_at ASC');
     return rows;
   }
   return loadStudentsFile();
@@ -1243,6 +1243,41 @@ app.delete('/api/admin/banners/:id', requireAdmin, async (req, res) => {
   res.json({ ok: true });
 });
 
+// Visão geral: números-chave e pendências que pedem uma ação da mentora.
+app.get('/api/admin/overview', requireAdmin, async (req, res) => {
+  try {
+    const students = await loadStudents();
+    const docs = await loadDocs();
+    const out = {
+      dbEnabled: useDb,
+      students: { total: students.length, pendingInvite: students.filter(s => !s.passwordSet).length, active7d: 0, neverLoggedIn: 0 },
+      docs: { total: docs.length, uncatalogued: 0 },
+      questions: { last7d: 0, last30d: 0, uncovered: 0, acervoShare: null }
+    };
+    if (useDb) {
+      const week = Date.now() - 7 * 86400000;
+      out.students.active7d = students.filter(s => s.lastLogin && new Date(s.lastLogin).getTime() >= week).length;
+      out.students.neverLoggedIn = students.filter(s => s.passwordSet && !s.lastLogin).length;
+      const cat = await getCatalogStatus();
+      out.docs.uncatalogued = Math.max(0, cat.total - cat.catalogued);
+      const [q, t, u] = await Promise.all([
+        pool.query(`SELECT COUNT(*) FILTER (WHERE created_at > now() - interval '7 days')::int AS d7,
+                           COUNT(*) FILTER (WHERE created_at > now() - interval '30 days')::int AS d30
+                    FROM messages WHERE role='user'`),
+        pool.query(`SELECT tier, COUNT(*)::int AS c FROM messages
+                    WHERE role='assistant' AND tier IS NOT NULL AND created_at > now() - interval '30 days' GROUP BY tier`),
+        pool.query(`SELECT COUNT(*)::int AS c FROM messages WHERE role='assistant' AND tier='sem_cobertura' AND created_at > now() - interval '30 days'`)
+      ]);
+      out.questions.last7d = q.rows[0].d7; out.questions.last30d = q.rows[0].d30;
+      out.questions.uncovered = u.rows[0].c;
+      const tm = Object.fromEntries(t.rows.map(r => [r.tier, r.c]));
+      const tot = (tm.acervo || 0) + (tm.fallback || 0) + (tm.sem_cobertura || 0);
+      out.questions.acervoShare = tot ? Math.round(100 * (tm.acervo || 0) / tot) : null;
+    }
+    res.json(out);
+  } catch (e) { console.error(e); res.status(500).json({ error: 'overview' }); }
+});
+
 app.get('/api/admin/analytics', requireAdmin, async (req, res) => {
   res.json(await getAnalytics());
 });
@@ -1258,7 +1293,8 @@ app.delete('/api/admin/doses/:id', requireAdmin, async (req, res) => {
 // ---------- Área da mentora: convites e contas dos alunos ----------
 
 function publicStudentFields(s) {
-  return { id: s.id, name: s.name, email: s.email, phone: s.phone || '', passwordSet: s.passwordSet };
+  return { id: s.id, name: s.name, email: s.email, phone: s.phone || '', passwordSet: s.passwordSet,
+    lastLogin: s.lastLogin || null, loginCount: s.loginCount || 0, createdAt: s.createdAt || null };
 }
 
 app.get('/api/admin/students', requireAdmin, async (req, res) => {
