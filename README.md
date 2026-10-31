@@ -316,3 +316,9 @@ Ainda sem tela própria (virá na etapa 4). Todas as rotas exigem o login de adm
 - Banners em rascunho ficam dentro do próprio registro do rascunho (sem tabelas novas) e entram na publicação/reversão junto com o resto.
 - A proteção de contraste agora escurece em passos de 3% (preserva mais a cor escolhida) e o painel mostra a cor escolhida e a efetivamente aplicada.
 - O painel passou a ter `viewport` para funcionar bem no celular.
+
+## Controle de cadastros (aba Alunos)
+- Resumo no topo: grátis, assinantes, mentoria, novos em 7 e 30 dias, grátis perto do limite (possíveis assinantes) e e-mails não confirmados, mais o gráfico de cadastros por semana.
+- Filtros por período de cadastro, origem (cadastro próprio ou convite) e "grátis perto do limite" (80% da cota de perguntas ou exames grátis esgotados); ordenação por cadastro, uso no mês ou último acesso.
+- Cada aluno mostra a data de cadastro e a origem. O CSV inclui cadastro, origem e uso do mês.
+- A situação de pagamento (em dia, atrasado, cancelado) depende da integração com o Asaas (próxima etapa).
