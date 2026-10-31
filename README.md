@@ -322,3 +322,25 @@ Ainda sem tela própria (virá na etapa 4). Todas as rotas exigem o login de adm
 - Filtros por período de cadastro, origem (cadastro próprio ou convite) e "grátis perto do limite" (80% da cota de perguntas ou exames grátis esgotados); ordenação por cadastro, uso no mês ou último acesso.
 - Cada aluno mostra a data de cadastro e a origem. O CSV inclui cadastro, origem e uso do mês.
 - A situação de pagamento (em dia, atrasado, cancelado) depende da integração com o Asaas (próxima etapa).
+
+## Pagamentos (Asaas)
+
+Módulo `billing.js` + página **Pagamentos** no admin. Muda o plano do aluno sozinho quando o Asaas avisa de um pagamento.
+
+**Variáveis no Render (nunca no chat nem no código):**
+- `ASAAS_WEBHOOK_TOKEN` — você inventa (32 a 255 caracteres) e cola o mesmo no cadastro do webhook no Asaas.
+- `ASAAS_API_KEY` — chave da API do Asaas (usada só para descobrir o e-mail de quem pagou).
+- `ASAAS_ENV` — `sandbox` para testes; remova (ou `production`) para valer.
+- `ASAAS_API_URL` — opcional; só para testes automatizados.
+
+**Webhook no Asaas:** `https://SEU-DOMINIO/webhook/asaas`, com o token acima; marque eventos de cobrança (pagamento confirmado/recebido/vencido/estornado/contestação) e de assinatura (inativada/removida).
+
+**Regras (editáveis em Pagamentos):** aviso por e-mail após 3 dias de atraso; volta ao Grátis após 7; tolerância de 2 dias depois do período pago; cancelamento mantém o acesso até o fim do período pago. Verificação automática a cada hora (e botão "Verificar atrasos agora").
+
+**Segurança e garantias:** token comparado em tempo constante; cada aviso é gravado uma vez (idempotente, tabela `billing_events`); se algo temporário falha, responde erro e o Asaas repete; mentoria e planos definidos à mão nunca são alterados; trocar o plano manualmente na lista de alunos desliga a cobrança automática daquele aluno.
+
+**Pagamento sem conta:** se alguém paga com e-mail sem cadastro, o evento fica guardado e o plano é aplicado quando a pessoa se cadastrar; se usou outro e-mail, vincule em Pagamentos.
+
+**Banco (aditivo):** tabela `billing_events`; colunas em `students`: `plan_until`, `billing_status`, `asaas_customer_id`, `billing_overdue_since`, `billing_warned_at`.
+
+**Trocar o link de pagamento:** campo "Link do botão Assinar" (`upgradeUrl`) em Planos e custos. Não exige alteração de código.

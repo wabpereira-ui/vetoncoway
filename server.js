@@ -141,6 +141,7 @@ async function initDb() {
   await pool.query(`ALTER TABLE students ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT TRUE;`);
   await pool.query(`ALTER TABLE students ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'convite';`);
   await pool.query(`ALTER TABLE students ADD COLUMN IF NOT EXISTS terms_accepted_at TIMESTAMPTZ;`);
+  await billing.init(); // Asaas: colunas de cobrança + tabela billing_events
   await pool.query(`
     CREATE TABLE IF NOT EXISTS auth_tokens (
       token_hash TEXT PRIMARY KEY,
@@ -256,7 +257,7 @@ function saveStudentsFile(students) {
 
 async function loadStudents() {
   if (useDb) {
-    const { rows } = await pool.query('SELECT id, name, email, phone, password_set AS "passwordSet", salt, hash, last_login AS "lastLogin", COALESCE(login_count,0) AS "loginCount", created_at AS "createdAt", COALESCE(plan,\'mentoria\') AS plan, COALESCE(free_exams_used,0) AS "freeExamsUsed", COALESCE(email_verified,true) AS "emailVerified", COALESCE(source,\'convite\') AS source FROM students ORDER BY created_at ASC');
+    const { rows } = await pool.query('SELECT id, name, email, phone, password_set AS "passwordSet", salt, hash, last_login AS "lastLogin", COALESCE(login_count,0) AS "loginCount", created_at AS "createdAt", COALESCE(plan,\'mentoria\') AS plan, COALESCE(free_exams_used,0) AS "freeExamsUsed", COALESCE(email_verified,true) AS "emailVerified", COALESCE(source,\'convite\') AS source, plan_until AS "planUntil", billing_status AS "billingStatus", billing_overdue_since AS "billingOverdueSince" FROM students ORDER BY created_at ASC');
     return rows;
   }
   return loadStudentsFile();
@@ -617,6 +618,7 @@ app.post('/api/signup', async (req, res) => {
          VALUES ($1,$2,$3,true,$4,$5,'gratis','cadastro',false,now())`, [id, nm, em, salt, hashPassword(pw, salt)]);
       const token = await createAuthToken(id, 'verify', 24 * 3600000);
       await sendAuthMail(req, em, 'verify', nm, `${root}/verificar?token=${token}`);
+      billing.applyPendingFor(em).catch(e => console.error('billing pendente:', e.message));
     } else if (existing.rows[0].password_set) {
       await sendInfoMail(em, 'Você já tem uma conta', `<p>Alguém (provavelmente você) tentou criar uma conta com este e-mail, mas ele já está cadastrado.</p><p><a href="${escHtml(root)}/login.html">Entrar</a> · Esqueceu a senha? Use "Esqueci minha senha" na tela de entrada.</p>`);
     } else {
@@ -1125,6 +1127,9 @@ const DEFAULT_SETTINGS = {
   // Planos (editáveis em /admin → Planos e custos). 0 em questions/exams = recurso indisponível.
   plans: '',                 // JSON; vazio = padrões abaixo (DEFAULT_PLANS)
   freeExamsOnce: '5',        // exames grátis, uma única vez, para quem está no plano Grátis
+  billingWarnDays: '3',      // dias de atraso até o aviso por e-mail
+  billingDowngradeDays: '7', // dias de atraso até voltar para o Grátis
+  billingGraceDays: '2',     // tolerância depois do fim do período pago
   upgradeUrl: '',            // para onde vai o botão "Assinar" (página de vendas/checkout)
   // Preços da API para ESTIMAR o custo (confira na Anthropic e ajuste): US$ por milhão de tokens e por mil buscas.
   priceInputPerM: '3', priceOutputPerM: '15', priceSearchPer1k: '10', usdBrl: '5.5',
@@ -1252,7 +1257,7 @@ async function saveSettings(input) {
   const clean = {};
   const limits = { appName: 60, tagline: 160, mentorName: 80, mentorTitle: 100, voice: 1500, searchMode: 20,
     primaryColor: 7, accentColor: 7, fontHeading: 10, radius: 10, showEntryCards: 3, quickLinks: 2500,
-    plans: 4000, freeExamsOnce: 4, upgradeUrl: 300, signupOpen: 3, supportEmail: 160, termsText: 20000, privacyText: 20000, priceInputPerM: 10, priceOutputPerM: 10, priceSearchPer1k: 10, usdBrl: 10 };
+    plans: 4000, freeExamsOnce: 4, upgradeUrl: 300, signupOpen: 3, supportEmail: 160, termsText: 20000, privacyText: 20000, priceInputPerM: 10, priceOutputPerM: 10, priceSearchPer1k: 10, usdBrl: 10, billingWarnDays: 3, billingDowngradeDays: 3, billingGraceDays: 3 };
   for (const k of Object.keys(DEFAULT_SETTINGS)) {
     if (typeof input[k] === 'string') clean[k] = input[k].trim().slice(0, limits[k]);
   }
@@ -1892,6 +1897,7 @@ app.delete('/api/admin/assets/:key', requireAdmin, async (req, res) => {
   res.json({ ok: true });
 });
 // Rascunho / publicação / reversão da aparência (infraestrutura; ver appearance.js).
+const billing = require('./billing')({ app, pool, useDb, requireAdmin, sendMail, mailConfigured, escHtml, getSettings, saveSettings, path, adminDir: path.join(__dirname, 'admin') });
 require('./appearance')({ app, pool, useDb, requireAdmin, parseDataUrl, DEFAULT_SETTINGS, OPTIONS, HEX, sanitizeQuickLinks,
   buildTheme, randomId: () => 'banner-' + crypto.randomBytes(5).toString('hex'),
   invalidateCaches: () => { _settingsCache = null; _brandingCache = null; } });
@@ -1966,7 +1972,8 @@ function publicStudentFields(s) {
   return { id: s.id, name: s.name, email: s.email, phone: s.phone || '', passwordSet: s.passwordSet,
     lastLogin: s.lastLogin || null, loginCount: s.loginCount || 0, createdAt: s.createdAt || null,
     plan: s.plan || 'mentoria', freeExamsUsed: s.freeExamsUsed || 0,
-    emailVerified: s.emailVerified !== false, source: s.source || 'convite' };
+    emailVerified: s.emailVerified !== false, source: s.source || 'convite',
+    planUntil: s.planUntil || null, billingStatus: s.billingStatus || null, billingOverdueSince: s.billingOverdueSince || null };
 }
 
 // Lista de alunos com o uso do mês (perguntas, exames e custo estimado).
@@ -1991,7 +1998,7 @@ app.get('/api/admin/students', requireAdmin, async (req, res) => {
 app.post('/api/admin/students/:id/plan', requireAdmin, async (req, res) => {
   const plan = req.body && req.body.plan;
   if (!PLAN_KEYS.includes(plan)) return res.status(400).json({ error: 'Plano inválido.' });
-  if (useDb) await pool.query('UPDATE students SET plan=$1 WHERE id=$2', [plan, req.params.id]);
+  if (useDb) await pool.query("UPDATE students SET plan=$1, plan_until=NULL, billing_status=NULL, billing_overdue_since=NULL, billing_warned_at=NULL WHERE id=$2", [plan, req.params.id]);
   res.json(await studentsWithUsage());
 });
 
