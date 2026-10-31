@@ -101,13 +101,27 @@
     </form>
 
     <form class="form" id="signupForm" onsubmit="return doSignup(event)">
-      <div class="hint">Crie sua conta gratuita. Você é aluno da mentoria? Use a aba "1º acesso" com o e-mail que a mentora cadastrou.</div>
+      <div class="hint">Crie sua conta gratuita. O app é de uso exclusivo de médicos-veterinários e estudantes. Você é aluno da mentoria? Use a aba "1º acesso" com o e-mail que a mentora cadastrou.</div>
       <label for="suName">Nome</label>
       <input id="suName" type="text" autocomplete="name" required maxlength="80">
       <label for="suEmail">E-mail</label>
       <input id="suEmail" type="email" autocomplete="email" required>
       <label for="suPassword">Senha (mínimo 8 caracteres)</label>
       <input id="suPassword" type="password" autocomplete="new-password" required minlength="8">
+      <label>Seu perfil</label>
+      <label class="chk"><input type="radio" name="suProfile" value="crmv" checked onchange="suProfileChange()"><span>Sou médico-veterinário(a) e tenho CRMV</span></label>
+      <label class="chk"><input type="radio" name="suProfile" value="sem_crmv" onchange="suProfileChange()"><span>Sou estudante ou ainda não tenho CRMV</span></label>
+      <div id="suCrmvBox">
+        <label for="suCrmv">Número do CRMV</label>
+        <input id="suCrmv" type="text" inputmode="numeric" maxlength="14" autocomplete="off" placeholder="Somente números">
+        <label for="suUf">Estado do CRMV</label>
+        <select id="suUf"><option value="">Escolha</option></select>
+      </div>
+      <div id="suProofBox" style="display:none;">
+        <div class="hint">Anexe o atestado de matrícula (PDF, JPG ou PNG, até 5 MB). Depois de confirmar o e-mail, seu cadastro será analisado e você receberá a resposta por e-mail. O documento é apagado após a análise.</div>
+        <label for="suProof">Atestado de matrícula</label>
+        <input id="suProof" type="file" accept="application/pdf,image/png,image/jpeg,image/webp">
+      </div>
       <input class="hp" id="suWebsite" type="text" tabindex="-1" autocomplete="off" aria-hidden="true">
       <label class="chk"><input id="suTerms" type="checkbox" required><span>Li e aceito os <a href="/termos" target="_blank">termos de uso</a> e a <a href="/privacidade" target="_blank">política de privacidade</a>.</span></label>
       <button type="submit">Criar conta grátis</button>
@@ -154,16 +168,35 @@ async function postJson(url, body){
   let data = {}; try{ data = await res.json(); }catch(e){}
   return { res, data };
 }
+const UF_LIST = 'AC AL AP AM BA CE DF ES GO MA MT MS MG PA PB PR PE PI RJ RN RS RO RR SC SP SE TO'.split(' ');
+document.getElementById('suUf').innerHTML = '<option value="">Escolha</option>' + UF_LIST.map(u => `<option>${u}</option>`).join('');
+function suProfile(){ const r = document.querySelector('input[name="suProfile"]:checked'); return r ? r.value : 'crmv'; }
+function suProfileChange(){
+  const c = suProfile() === 'crmv';
+  document.getElementById('suCrmvBox').style.display = c ? '' : 'none';
+  document.getElementById('suProofBox').style.display = c ? 'none' : '';
+}
+function readFileAsDataUrl(f){ return new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = () => no(new Error('Não foi possível ler o arquivo.')); r.readAsDataURL(f); }); }
 async function doSignup(e){
   e.preventDefault();
   const err = document.getElementById('signupError'), ok = document.getElementById('signupOk');
   err.textContent = ''; ok.textContent = '';
   try{
+    const prof = suProfile(); let proof = null, proofName = '';
+    if(prof === 'crmv'){
+      if(!document.getElementById('suCrmv').value.trim() || !document.getElementById('suUf').value){ err.textContent = 'Informe o número e o estado do CRMV.'; return false; }
+    } else {
+      const f = document.getElementById('suProof').files[0];
+      if(!f){ err.textContent = 'Anexe o atestado de matrícula.'; return false; }
+      if(f.size > 5 * 1024 * 1024){ err.textContent = 'O arquivo passa de 5 MB. Envie um menor.'; return false; }
+      proof = await readFileAsDataUrl(f); proofName = f.name;
+    }
     const { res, data } = await postJson('/api/signup', {
+      profile: prof, crmv: document.getElementById('suCrmv').value.trim(), crmvUf: document.getElementById('suUf').value, proof, proofName,
       name: document.getElementById('suName').value.trim(), email: document.getElementById('suEmail').value.trim(),
       password: document.getElementById('suPassword').value, acceptTerms: document.getElementById('suTerms').checked,
       website: document.getElementById('suWebsite').value });
-    if(res.ok){ ok.textContent = 'Quase lá! Enviamos um link de confirmação para o seu e-mail. Clique nele para ativar a conta (confira o spam).'; document.getElementById('suPassword').value = ''; }
+    if(res.ok){ ok.textContent = 'Quase lá! Enviamos um link de confirmação para o seu e-mail. Clique nele para ativar a conta (confira o spam).' + (prof === 'sem_crmv' ? ' Depois disso, seu atestado será analisado e avisaremos por e-mail.' : ''); document.getElementById('suPassword').value = ''; }
     else err.textContent = data.error || 'Não foi possível criar a conta.';
   }catch(x){ err.textContent = 'Erro de conexão. Tente novamente.'; }
   return false;

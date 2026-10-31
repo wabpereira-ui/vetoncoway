@@ -247,6 +247,28 @@ let pendingAttachments = [];
 let processingFiles = 0; // arquivos sendo lidos/convertidos agora (para mostrar "Lendo...")
 let currentConversationId = null; // null = conversa nova ainda não criada no banco
 
+function showAccessGate(a){
+  let el = document.getElementById('accessGate');
+  if(!el){ el = document.createElement('div'); el.id = 'accessGate'; el.className = 'pl-back open'; el.style.background = '#F4F6F5'; document.body.appendChild(el); }
+  const rej = a.status === 'rejected';
+  el.innerHTML = `<div class="pl-box" style="text-align:center;"><h2>${rej ? 'Cadastro não aprovado' : 'Cadastro em análise'}</h2>
+    <p class="pl-sub">${rej ? 'Não foi possível aprovar o documento enviado.' + (a.note ? ' Motivo: ' + escapeHtml(a.note) : '') + ' Envie um novo atestado de matrícula para uma nova análise.'
+      : 'Recebemos seu atestado de matrícula. Assim que for aprovado, avisaremos por e-mail e o acesso ao agente será liberado.'}</p>
+    ${rej || a.status === 'pending' ? `<div style="margin:12px 0;"><input type="file" id="gateFile" accept="application/pdf,image/png,image/jpeg,image/webp"><div><button class="new-chat-btn" style="max-width:240px;margin:10px auto 0;" onclick="sendGateProof()">${rej ? 'Enviar novo atestado' : 'Substituir o atestado'}</button></div><div id="gateMsg" class="pl-sub" style="margin-top:8px;"></div></div>` : ''}
+    <p class="pl-sub"><a href="#" onclick="logout(); return false;">Sair</a></p></div>`;
+}
+async function sendGateProof(){
+  const f = document.getElementById('gateFile').files[0], m = document.getElementById('gateMsg');
+  if(!f){ m.textContent = 'Escolha o arquivo.'; return; }
+  if(f.size > 5 * 1024 * 1024){ m.textContent = 'O arquivo passa de 5 MB.'; return; }
+  m.textContent = 'Enviando...';
+  try{
+    const proof = await new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(f); });
+    const res = await fetch('/api/proof', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ proof, proofName: f.name }) });
+    const d = await res.json().catch(() => ({}));
+    if(res.ok) showAccessGate({ status:'pending' }); else m.textContent = d.error || 'Não foi possível enviar.';
+  }catch(e){ m.textContent = 'Erro de conexão.'; }
+}
 function toggleSidebar(){ document.getElementById('sidebar').classList.toggle('open'); }
 
 async function loadMe(){
@@ -255,6 +277,7 @@ async function loadMe(){
     if(res.ok){
       const data = await res.json();
       document.getElementById('welcomeMsg').textContent = 'Olá, ' + data.name;
+      if(data.access) showAccessGate(data.access);
     }
   }catch(e){}
 }
@@ -723,6 +746,7 @@ async function sendMessage(){
       body: JSON.stringify(body)
     });
     if(response.status === 401){ window.location.href = '/login.html'; return; }
+    if(response.status === 403){ loadMe(); return; }
     if(response.status === 413){ throw new Error('anexos_grandes'); }
     const data = await response.json();
     if(response.status === 429 && data.error === 'quota'){
