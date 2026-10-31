@@ -117,6 +117,7 @@
     <button class="nav" id="tabBtn-alunos" onclick="showPage('alunos')">🎓 Alunos</button>
     <div class="grp">Negócio</div>
     <button class="nav" id="tabBtn-planos" onclick="showPage('planos')">💳 Planos e custos</button>
+    <button class="nav" id="tabBtn-pagamentos" onclick="showPage('pagamentos')">🧾 Pagamentos</button>
     <div class="grp">Desempenho</div>
     <button class="nav" id="tabBtn-atividade" onclick="showPage('atividade')">📊 Atividade e lacunas</button>
     <div class="grp">Marca e sistema</div>
@@ -202,7 +203,7 @@
 
       <div class="kpis" id="stKpis" style="margin-bottom:10px;"></div>
       <div class="panel" id="stWeekly" style="margin-bottom:12px;padding:12px 14px;"></div>
-      <div class="status" style="margin:0 0 12px;">A situação dos pagamentos (em dia, atrasado, cancelado) aparecerá aqui quando o Asaas for integrado. Por enquanto, o plano é o que você define na lista.</div>
+      <div class="status" style="margin:0 0 12px;">Situação do pagamento (em dia, atrasado, cancelado) aparece em cada assinante que paga pelo Asaas. Detalhes e regras na aba Pagamentos.</div>
       <div class="toolbar">
         <input type="text" id="stSearch" placeholder="Buscar por nome, e-mail ou WhatsApp..." oninput="stPage=1; drawStudents()">
         <select id="stFilter" onchange="stPage=1; drawStudents()">
@@ -214,6 +215,8 @@
           <option value="novos7">Cadastrados nos últimos 7 dias</option>
           <option value="novos30">Cadastrados nos últimos 30 dias</option>
           <option value="oportunidade">Grátis perto do limite (possíveis assinantes)</option>
+          <option value="atrasado">Pagamento atrasado</option>
+          <option value="cancelado">Assinatura cancelada (ainda com acesso)</option>
         </select>
         <select id="stOrigin" onchange="stPage=1; drawStudents()">
           <option value="">Qualquer origem</option><option value="cadastro">Cadastro próprio</option><option value="convite">Convite</option>
@@ -299,6 +302,9 @@
       <div class="status" id="plStatus"></div>
     </div>
 
+    <!-- ABA: PAGAMENTOS -->
+    <div class="page" id="page-pagamentos"><div id="pgRoot"></div></div>
+
     <!-- ABA: APARÊNCIA -->
     <div class="page" id="page-aparencia"><div id="apRoot"></div></div>
 
@@ -347,6 +353,7 @@
   </div>
 
 <script src="/admin/aparencia.js"></script>
+<script src="/admin/pagamentos.js"></script>
 <script>
 if(window['pdfjsLib']){
   pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
@@ -360,6 +367,7 @@ const PAGES = {
   triagem:   ['Triagem e doses', 'Catalogação automática dos artigos e revisão das doses extraídas.'],
   alunos:    ['Alunos', 'Convites, acessos e status de cada aluno.'],
   planos:    ['Planos e custos', 'Limites de cada plano, gancho de exames grátis e custo estimado do mês.'],
+  pagamentos: ['Pagamentos', 'Assinaturas do Asaas, atrasos e regras de cobrança.'],
   atividade: ['Atividade e lacunas', 'Uso do app, assuntos mais procurados e perguntas que o acervo não cobriu.'],
   aparencia: ['Aparência', 'Marca, cores, banners e links do app. Nada vai ao ar sem você publicar.'],
   config:    ['Identidade e IA', 'Nome, voz da mentora e como a IA usa a internet.']
@@ -378,6 +386,7 @@ function showPage(name){
   if(name === 'atividade') loadAnalytics();
   if(name === 'config') loadConfig();
   if(name === 'aparencia') loadAppearance();
+  if(name === 'pagamentos') loadPagamentos();
   if(name === 'planos') loadPlans();
 }
 
@@ -634,6 +643,8 @@ function studentMatches(s, filter){
   if(filter === 'novos7') return createdMs(s) !== null && Date.now() - createdMs(s) < 7 * day;
   if(filter === 'novos30') return createdMs(s) !== null && Date.now() - createdMs(s) < 30 * day;
   if(filter === 'oportunidade') return nearFreeLimit(s);
+  if(filter === 'atrasado') return s.billingStatus === 'overdue';
+  if(filter === 'cancelado') return s.billingStatus === 'canceled';
   if(filter === 'pendente') return !s.passwordSet;
   if(filter === 'ativo') return last !== null && Date.now() - last < 7 * day;
   if(filter === 'inativo') return s.passwordSet && last !== null && Date.now() - last > 30 * day;
@@ -653,6 +664,18 @@ function filteredStudents(){
   else if(so === 'acesso') list.sort((a, b) => t(b.lastLogin) - t(a.lastLogin));
   return list;
 }
+function billingBadge(s){
+  if((s.plan || 'mentoria') === 'mentoria' && !s.billingStatus) return '';
+  const until = s.planUntil ? ' até ' + fmtDay(s.planUntil) : '';
+  if(s.billingStatus === 'active') return `<span class="badge">pagamento em dia${until}</span>`;
+  if(s.billingStatus === 'overdue') return `<span class="badge warn">pagamento atrasado desde ${fmtDay(s.billingOverdueSince)}</span>`;
+  if(s.billingStatus === 'canceled') return `<span class="badge warn">cancelou · acesso${until}</span>`;
+  if(s.billingStatus === 'downgraded') return '<span class="badge warn">voltou ao Grátis por atraso</span>';
+  if(s.billingStatus === 'refunded') return '<span class="badge warn">estornado · voltou ao Grátis</span>';
+  if(s.billingStatus === 'ended') return '<span class="badge">assinatura encerrada</span>';
+  if(s.plan === 'assinante') return '<span class="badge">assinante manual</span>';
+  return '';
+}
 function fmtDay(v){ return v ? new Date(v).toLocaleDateString('pt-BR') : '—'; }
 // Resumo: quantos grátis, assinantes e mentoria; novos cadastros; cadastros por semana.
 function drawStudentSummary(){
@@ -666,7 +689,7 @@ function drawStudentSummary(){
   const pay = g + a > 0 ? Math.round(100 * a / (g + a)) : 0;
   const k = (n, l, extra) => `<div class="kpi"><div class="n">${n}</div><div class="l">${l}</div>${extra ? `<div class="l" style="font-size:11.5px;margin-top:2px;">${extra}</div>` : ''}</div>`;
   document.getElementById('stKpis').innerHTML = k(g, 'No plano Grátis', `${own} por cadastro próprio`) + k(a, 'Assinantes', `${pay}% de quem não é da mentoria`) + k(m, 'Mentoria') +
-    k(n7, 'Novos em 7 dias', `${n30} em 30 dias`) + k(opp, 'Grátis perto do limite', 'possíveis assinantes') + (unv ? k(unv, 'E-mail não confirmado') : '');
+    k(n7, 'Novos em 7 dias', `${n30} em 30 dias`) + k(opp, 'Grátis perto do limite', 'possíveis assinantes') + (unv ? k(unv, 'E-mail não confirmado') : '') + (all.filter(s => s.billingStatus === 'overdue').length ? k(all.filter(s => s.billingStatus === 'overdue').length, 'Pagamento atrasado', 'veja a aba Pagamentos') : '');
   // cadastros por semana (8 semanas)
   const weeks = Array.from({ length: 8 }, (_, i) => 0);
   all.forEach(s => { const c = createdMs(s); if(c === null) return; const w = Math.floor((now - c) / (7 * day)); if(w >= 0 && w < 8) weeks[w]++; });
@@ -693,6 +716,7 @@ function drawStudents(){
     const since = `cadastro em ${fmtDay(s.createdAt)} · ${s.source === 'cadastro' ? 'cadastro próprio' : 'convite'}`;
     const lead = nearFreeLimit(s) ? '<span class="badge warn">perto do limite</span>' : '';
     badge += lead;
+    badge += billingBadge(s);
     const access = s.lastLogin ? `último acesso: ${timeAgoAnalytics(s.lastLogin)} · ${s.loginCount||0} login(s)` : 'sem acessos ainda';
     const phoneLabel = s.phone ? `WhatsApp: ${escapeHtml(s.phone)}` : 'sem WhatsApp';
     const card = document.createElement('div');
