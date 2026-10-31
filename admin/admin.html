@@ -288,6 +288,14 @@
         <input type="text" id="plUpgrade" placeholder="https://vetjoicefaria.com/...">
       </div>
 
+      <h2>Modalidades do plano Assinante</h2>
+      <div class="panel">
+        <div class="status" style="margin:0 0 10px;">O que o aluno vê na aba Planos. O valor cobrado de verdade é o do link do Asaas: ao mudar um preço, mude também no link. Sem link ou desmarcado, a modalidade não aparece.</div>
+        <div style="overflow-x:auto;"><table class="plan-table" id="offerTable"></table></div>
+        <label class="fl">Link da mentoria (opcional)</label><input type="text" id="plMentoria" placeholder="https://vetjoicefaria.com/mentoria/">
+        <label class="fl">Link da capacitação (opcional)</label><input type="text" id="plCapac" placeholder="https://...">
+      </div>
+
       <h2>Preços usados na estimativa de custo</h2>
       <div class="panel">
         <div class="status" style="margin:0 0 10px;">Confira os valores atuais na Anthropic e ajuste aqui. O custo exibido é uma estimativa.</div>
@@ -956,6 +964,17 @@ async function loadPlans(){
       <td><input type="text" data-f="historyDays" value="${p.historyDays}"></td>
       <td><input type="text" data-f="chunks" value="${p.chunks}"></td>
       <td><input type="checkbox" data-f="whatsapp" ${p.whatsapp ? 'checked' : ''}></td></tr>`; }).join('');
+  let offers = []; try{ offers = JSON.parse(cfg.planOffers); }catch(e){}
+  document.getElementById('offerTable').innerHTML = '<tr><th>Ciclo</th><th>Nome</th><th>Preço total (R$)</th><th>Por mês</th><th>Link de pagamento do Asaas</th><th>Ativo</th><th>Destaque</th></tr>' +
+    offers.map(o => `<tr data-offer="${o.key}" data-months="${o.months}"><td>${o.months} mês(es)</td>
+      <td><input type="text" class="lbl" data-f="label" value="${escapeHtml(o.label)}"></td>
+      <td><input type="text" data-f="price" value="${o.price}" oninput="offerPerMonth(this)"></td>
+      <td class="opm">R$ ${(parseFloat(o.price) / o.months).toFixed(2).replace('.', ',')}</td>
+      <td><input type="text" data-f="link" style="min-width:260px;" value="${escapeHtml(o.link)}" placeholder="https://www.asaas.com/c/..."></td>
+      <td><input type="checkbox" data-f="active" ${o.active ? 'checked' : ''}></td>
+      <td><input type="radio" name="offerHl" data-f="highlight" ${o.highlight ? 'checked' : ''}></td></tr>`).join('');
+  document.getElementById('plMentoria').value = cfg.mentoriaUrl || '';
+  document.getElementById('plCapac').value = cfg.capacitacaoUrl || '';
   document.getElementById('plFreeExams').value = cfg.freeExamsOnce;
   document.getElementById('plUpgrade').value = cfg.upgradeUrl || '';
   document.getElementById('plPin').value = cfg.priceInputPerM;
@@ -975,13 +994,22 @@ async function loadPlans(){
     ? b.topStudents.map(r => `<div class="doc-card"><div class="doc-name">${escapeHtml(r.name)}<span class="badge">${escapeHtml(PLAN_NAMES[r.plan] || r.plan)}</span></div><div class="doc-meta">${escapeHtml(r.email)} · ${r.n} uso(s) · ${fmtMoney(r.cost)}</div></div>`).join('')
     : '<div class="status">Ainda sem uso registrado neste mês.</div>';
 }
+function offerPerMonth(inp){
+  const tr = inp.closest('tr'), n = parseFloat(String(inp.value).replace(',', '.')) / parseInt(tr.dataset.months, 10);
+  tr.querySelector('.opm').textContent = isFinite(n) ? 'R$ ' + n.toFixed(2).replace('.', ',') : '—';
+}
 async function savePlans(){
+  const planOffers = [...document.querySelectorAll('#offerTable tr[data-offer]')].map(tr => {
+    const o = { key: tr.dataset.offer };
+    tr.querySelectorAll('[data-f]').forEach(i => { o[i.dataset.f] = (i.type === 'checkbox' || i.type === 'radio') ? i.checked : i.value.trim(); });
+    return o;
+  });
   const plans = {};
   document.querySelectorAll('#planTable tr[data-plan]').forEach(tr => {
     const p = {}; tr.querySelectorAll('[data-f]').forEach(i => { p[i.dataset.f] = i.type === 'checkbox' ? i.checked : i.value; });
     plans[tr.dataset.plan] = p;
   });
-  const body = { plans, freeExamsOnce: document.getElementById('plFreeExams').value, upgradeUrl: document.getElementById('plUpgrade').value.trim(),
+  const body = { plans, planOffers, mentoriaUrl: document.getElementById('plMentoria').value.trim(), capacitacaoUrl: document.getElementById('plCapac').value.trim(), freeExamsOnce: document.getElementById('plFreeExams').value, upgradeUrl: document.getElementById('plUpgrade').value.trim(),
     priceInputPerM: document.getElementById('plPin').value, priceOutputPerM: document.getElementById('plPout').value,
     priceSearchPer1k: document.getElementById('plPsearch').value, usdBrl: document.getElementById('plBrl').value };
   const st = document.getElementById('plStatus'); st.textContent = 'Salvando...';
