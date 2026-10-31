@@ -141,6 +141,7 @@ async function initDb() {
   await pool.query(`ALTER TABLE students ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT TRUE;`);
   await pool.query(`ALTER TABLE students ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'convite';`);
   await pool.query(`ALTER TABLE students ADD COLUMN IF NOT EXISTS terms_accepted_at TIMESTAMPTZ;`);
+  await access.init(); // CRMV / atestado de matrícula
   await billing.init(); // Asaas: colunas de cobrança + tabela billing_events
   await pool.query(`
     CREATE TABLE IF NOT EXISTS auth_tokens (
@@ -257,7 +258,7 @@ function saveStudentsFile(students) {
 
 async function loadStudents() {
   if (useDb) {
-    const { rows } = await pool.query('SELECT id, name, email, phone, password_set AS "passwordSet", salt, hash, last_login AS "lastLogin", COALESCE(login_count,0) AS "loginCount", created_at AS "createdAt", COALESCE(plan,\'mentoria\') AS plan, COALESCE(free_exams_used,0) AS "freeExamsUsed", COALESCE(email_verified,true) AS "emailVerified", COALESCE(source,\'convite\') AS source, plan_until AS "planUntil", billing_status AS "billingStatus", billing_overdue_since AS "billingOverdueSince" FROM students ORDER BY created_at ASC');
+    const { rows } = await pool.query('SELECT id, name, email, phone, password_set AS "passwordSet", salt, hash, last_login AS "lastLogin", COALESCE(login_count,0) AS "loginCount", created_at AS "createdAt", COALESCE(plan,\'mentoria\') AS plan, COALESCE(free_exams_used,0) AS "freeExamsUsed", COALESCE(email_verified,true) AS "emailVerified", COALESCE(source,\'convite\') AS source, plan_until AS "planUntil", billing_status AS "billingStatus", billing_overdue_since AS "billingOverdueSince", crmv, crmv_uf AS "crmvUf", access_status AS "accessStatus", access_note AS "accessNote" FROM students ORDER BY created_at ASC');
     return rows;
   }
   return loadStudentsFile();
@@ -565,6 +566,8 @@ function rateLimit(key, max, windowMs) {
 }
 setInterval(() => { const now = Date.now(); for (const [k, v] of _rate) { if (!v.some(t => now - t < 3600000)) _rate.delete(k); } }, 600000).unref();
 
+const access = require('./access')({ app, pool, useDb, requireAdmin, requireStudentApi, rateLimit, sendInfoMail, getSettings, escHtml });
+
 const sha256 = t => crypto.createHash('sha256').update(t).digest('hex');
 async function createAuthToken(studentId, kind, ttlMs) {
   const raw = crypto.randomBytes(32).toString('hex');
@@ -595,6 +598,7 @@ app.get('/privacidade', async (req, res) => { const c = await getSettings(); res
 app.post('/api/signup', async (req, res) => {
   try {
     const { name, email, password, acceptTerms, website } = req.body || {};
+    const prof = access.parseProfile(req.body);
     if (website) return res.json({ ok: true, message: GENERIC_SENT }); // honeypot: robôs preenchem
     const cfg = await getSettings();
     if (cfg.signupOpen !== 'sim' || !useDb) return res.status(403).json({ error: 'O cadastro ainda não está aberto.' });
@@ -604,6 +608,7 @@ app.post('/api/signup', async (req, res) => {
     if (!EMAIL_RE.test(em) || em.length > 160) return res.status(400).json({ error: 'E-mail inválido.' });
     if (pw.length < 8 || pw.length > 128) return res.status(400).json({ error: 'A senha precisa ter entre 8 e 128 caracteres.' });
     if (acceptTerms !== true) return res.status(400).json({ error: 'É preciso aceitar os termos de uso e a política de privacidade.' });
+    if (prof.error) return res.status(400).json({ error: prof.error });
     // limite só para tentativas válidas (as que gastariam e-mail): 8 por hora por IP, 3 por e-mail
     if (!rateLimit('signup:' + req.ip, 8, 3600000)) return res.status(429).json({ error: 'Muitas tentativas. Tente novamente mais tarde.' });
     if (!rateLimit('signup-mail:' + em, 3, 3600000)) return res.json({ ok: true, message: GENERIC_SENT });
@@ -614,8 +619,9 @@ app.post('/api/signup', async (req, res) => {
       const id = 'u-' + crypto.randomBytes(8).toString('hex');
       const salt = crypto.randomBytes(16).toString('hex');
       await pool.query(
-        `INSERT INTO students (id, name, email, password_set, salt, hash, plan, source, email_verified, terms_accepted_at)
-         VALUES ($1,$2,$3,true,$4,$5,'gratis','cadastro',false,now())`, [id, nm, em, salt, hashPassword(pw, salt)]);
+        `INSERT INTO students (id, name, email, password_set, salt, hash, plan, source, email_verified, terms_accepted_at, crmv, crmv_uf, access_status)
+         VALUES ($1,$2,$3,true,$4,$5,'gratis','cadastro',false,now(),$6,$7,$8)`, [id, nm, em, salt, hashPassword(pw, salt), prof.crmv, prof.uf, prof.status]);
+      if (prof.proof) await access.saveProof(id, prof.proof);
       const token = await createAuthToken(id, 'verify', 24 * 3600000);
       await sendAuthMail(req, em, 'verify', nm, `${root}/verificar?token=${token}`);
       billing.applyPendingFor(em).catch(e => console.error('billing pendente:', e.message));
@@ -634,7 +640,8 @@ app.get('/verificar', async (req, res) => {
     const studentId = await consumeAuthToken(String(req.query.token || ''), 'verify');
     if (!studentId) return res.status(400).send(simplePage('Link inválido ou expirado', '<p>Este link de confirmação não vale mais. Entre com seu e-mail e senha e peça um novo link.</p><p><a href="/login.html">Ir para a entrada</a></p>'));
     await pool.query('UPDATE students SET email_verified=true WHERE id=$1', [studentId]);
-    const { rows } = await pool.query('SELECT id, name FROM students WHERE id=$1', [studentId]);
+    const { rows } = await pool.query('SELECT id, name, email, access_status FROM students WHERE id=$1', [studentId]);
+    if (rows[0] && rows[0].access_status === 'pending') access.notifyMentor(rows[0].name, rows[0].email);
     createSession(rows[0], res, req);
     await recordLogin(rows[0].id);
     res.redirect('/');
@@ -849,7 +856,7 @@ app.post('/api/logout', (req, res) => {
   res.json({ ok: true });
 });
 // Modalidades do plano Assinante para a aba Planos do aluno.
-app.get('/api/offers', requireStudentApi, async (req, res) => {
+app.get('/api/offers', access.requireApprovedApi, async (req, res) => {
   try {
     const cfg = await getSettings();
     const info = await getUsageInfo(req.student.studentId);
@@ -872,7 +879,9 @@ app.get('/api/me', async (req, res) => {
   if (!session) return res.status(401).json({ error: 'not_authenticated' });
   let usage = null;
   try { usage = usageSummary(await getUsageInfo(session.studentId)); } catch (e) { console.error(e.message); }
-  res.json({ name: session.name, usage });
+  let acc = { status: null, note: '' };
+  try { acc = await access.accessState(session.studentId); } catch (e) { console.error(e.message); }
+  res.json({ name: session.name, usage, access: acc.status ? { status: acc.status, note: acc.note } : null });
 });
 
 // Página principal e demais arquivos estáticos exigem login de aluno
@@ -1178,15 +1187,18 @@ Cada plano tem limites mensais de uso, informados no aplicativo. Os limites pode
 5. Conteúdo e propriedade intelectual
 O conteúdo do aplicativo e do material da mentora é protegido por direitos autorais. É proibido copiar, redistribuir ou usar o conteúdo para treinar outros sistemas.
 
-6. Dados de pacientes e tutores
+6. Quem pode usar
+O aplicativo é de uso exclusivo de médicos-veterinários e de estudantes de medicina veterinária, como apoio ao raciocínio clínico. Não é orientação a tutores e não substitui a consulta com um médico-veterinário. Não use as respostas para medicar animais sem acompanhamento profissional. O cadastro exige o número do CRMV ou a comprovação de matrícula, e podemos suspender contas que não cumpram essa regra.
+
+7. Dados de pacientes e tutores
 Não envie dados pessoais de tutores (nome, telefone, endereço, documentos) em perguntas ou exames. Remova essas informações antes de anexar.
 
-7. Alterações e contato
+8. Alterações e contato
 Estes termos podem ser atualizados. Dúvidas: use o contato informado no aplicativo.`;
 const DEFAULT_PRIVACY = `MODELO PARA REVISÃO: substitua pelo texto aprovado pela mentora e revisado por um advogado (LGPD).
 
 1. Dados que coletamos
-Nome, e-mail, senha (armazenada de forma criptografada), plano, suas perguntas, as respostas geradas e os exames ou arquivos que você anexar, além de dados de uso (datas de acesso e quantidade de perguntas).
+Nome, e-mail, senha (armazenada de forma criptografada), número do CRMV e estado (ou atestado de matrícula, apagado depois da análise), plano, suas perguntas, as respostas geradas e os exames ou arquivos que você anexar, além de dados de uso (datas de acesso e quantidade de perguntas).
 
 2. Para que usamos
 Para criar e manter sua conta, responder às suas perguntas, controlar os limites do plano, melhorar o material de ensino com dados agregados e garantir a segurança do serviço.
@@ -1781,12 +1793,12 @@ async function askClaude(session, question, contextBlock, { images, examTexts } 
 
 // ---------- API usada pela tela dos alunos (exige login) ----------
 
-app.get('/api/docs', requireStudentApi, async (req, res) => {
+app.get('/api/docs', access.requireApprovedApi, async (req, res) => {
   const docs = (await loadDocs()).map(d => ({ id: d.id, name: d.name }));
   res.json(docs);
 });
 
-app.post('/api/ask', requireStudentApi, async (req, res) => {
+app.post('/api/ask', access.requireApprovedApi, async (req, res) => {
   try {
     const { question, images, examTexts, conversationId } = req.body;
     if (!question && !(images?.length) && !(examTexts?.length)) {
@@ -1842,24 +1854,24 @@ app.post('/api/ask', requireStudentApi, async (req, res) => {
 
 // ---------- Conversas salvas do aluno (histórico persistente, como no Claude) ----------
 
-app.get('/api/conversations', requireStudentApi, async (req, res) => {
+app.get('/api/conversations', access.requireApprovedApi, async (req, res) => {
   let days = 0;
   try { const info = await getUsageInfo(req.student.studentId); days = info ? info.limits.historyDays : 0; } catch (e) {}
   res.json(await listConversations(req.student.studentId, days));
 });
 
-app.post('/api/conversations', requireStudentApi, async (req, res) => {
+app.post('/api/conversations', access.requireApprovedApi, async (req, res) => {
   const id = await createConversation(req.student.studentId);
   res.json({ id });
 });
 
-app.get('/api/conversations/:id/messages', requireStudentApi, async (req, res) => {
+app.get('/api/conversations/:id/messages', access.requireApprovedApi, async (req, res) => {
   const owner = await getConversationOwner(req.params.id);
   if (owner !== req.student.studentId) return res.status(403).json({ error: 'Conversa não encontrada.' });
   res.json(await loadConversationMessages(req.params.id));
 });
 
-app.delete('/api/conversations/:id', requireStudentApi, async (req, res) => {
+app.delete('/api/conversations/:id', access.requireApprovedApi, async (req, res) => {
   const owner = await getConversationOwner(req.params.id);
   if (owner !== req.student.studentId) return res.status(403).json({ error: 'Conversa não encontrada.' });
   await deleteConversation(req.params.id);
@@ -2028,7 +2040,8 @@ function publicStudentFields(s) {
     lastLogin: s.lastLogin || null, loginCount: s.loginCount || 0, createdAt: s.createdAt || null,
     plan: s.plan || 'mentoria', freeExamsUsed: s.freeExamsUsed || 0,
     emailVerified: s.emailVerified !== false, source: s.source || 'convite',
-    planUntil: s.planUntil || null, billingStatus: s.billingStatus || null, billingOverdueSince: s.billingOverdueSince || null };
+    planUntil: s.planUntil || null, billingStatus: s.billingStatus || null, billingOverdueSince: s.billingOverdueSince || null,
+    crmv: s.crmv || '', crmvUf: s.crmvUf || '', accessStatus: s.accessStatus || null, accessNote: s.accessNote || '' };
 }
 
 // Lista de alunos com o uso do mês (perguntas, exames e custo estimado).
@@ -2228,6 +2241,9 @@ app.post('/webhook', async (req, res) => {
         'Este número não está cadastrado no programa de mentoria. Peça para a mentora liberar seu acesso e tente novamente.');
       return;
     }
+
+    const waAccess = await access.accessState(student.id);
+    if (waAccess.status) { await sendWhatsAppMessage(message.from, 'Seu acesso ainda não foi liberado. Abra o aplicativo para acompanhar a análise do seu cadastro.'); return; }
 
     // Plano: o WhatsApp só está disponível nos planos que o incluem.
     const waInfo = await getUsageInfo(student.id);

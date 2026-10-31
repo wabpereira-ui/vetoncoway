@@ -351,3 +351,13 @@ Módulo `billing.js` + página **Pagamentos** no admin. Muda o plano do aluno so
 - Aluno: o botão "Conhecer o plano Assinante" / "Ver planos" (lateral e aviso de limite) abre uma janela com os ciclos, valor por mês e economia. Quem é da Mentoria não vê o botão. Se nenhuma modalidade estiver ativa, usa o link antigo (`upgradeUrl`).
 - O valor cobrado é o do link do Asaas: ao mudar um preço, mude nos dois lugares.
 - Endpoint: `GET /api/offers` (exige login de aluno).
+
+## Acesso por CRMV ou atestado (cadastro espontâneo)
+
+- Cadastro próprio (`/api/signup`): o perfil é obrigatório. **Com CRMV**: informa número e UF, e o acesso é liberado após confirmar o e-mail. **Estudante / sem CRMV**: anexa o atestado de matrícula (PDF/JPG/PNG/WebP, até 5 MB, conferido pelo conteúdo do arquivo) e só acessa o agente depois da aprovação.
+- Quem está pendente ou recusado entra no app, mas vê uma tela de "Cadastro em análise" (com reenvio do atestado); `/api/ask`, conversas, acervo e ofertas respondem 403 `access_pending`, e o WhatsApp também é bloqueado.
+- Admin → Alunos: filtro "Aguardando aprovação", selo na lateral, botões **Ver atestado / Aprovar / Recusar** (com motivo, enviado por e-mail). O arquivo é apagado na decisão. A mentora é avisada por e-mail (`supportEmail`) quando o aluno confirma o e-mail.
+- O número do CRMV **não é validado automaticamente**: confira por amostragem no site do conselho regional.
+- Convidados e alunos de mentoria não são afetados. Contas de cadastro próprio criadas antes desta regra continuam liberadas.
+- Banco (aditivo): colunas `crmv`, `crmv_uf`, `access_status`, `access_note`, `access_reviewed_at` em `students`; tabela `student_proofs`.
+- Os termos de uso e a política padrão ganharam a cláusula "Quem pode usar". Se você já salvou textos próprios em Aparência/Termos, inclua essa cláusula neles.
