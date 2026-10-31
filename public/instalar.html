@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#223449">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/brand/icon512">
+<title>Como instalar o aplicativo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{ --paper:#F1F3EE; --card:#FFFFFF; --ink:#1E2A32; --ink-soft:#4B5A61; --navy:#223449; --sage:#5C8374; --sage-dark:#3F5C50; --line:#CBD3C4; }
+  *{ box-sizing:border-box; }
+  body{ margin:0; background:var(--paper); color:var(--ink); font-family:'IBM Plex Sans',sans-serif; line-height:1.5; padding:16px; }
+  .wrap{ max-width:560px; margin:0 auto; }
+  .eyebrow{ font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:2.5px; color:var(--sage-dark); text-transform:uppercase; text-align:center; margin:18px 0 6px; }
+  h1{ font-family:'Source Serif 4',serif; font-size:24px; color:var(--navy); margin:0 0 8px; text-align:center; }
+  .lead{ text-align:center; color:var(--ink-soft); font-size:14.5px; margin:0 0 18px; }
+  .tabs{ display:flex; border:1px solid var(--line); border-radius:4px; overflow:hidden; margin-bottom:14px; background:#fff; }
+  .tab{ flex:1; text-align:center; padding:11px 8px; cursor:pointer; font-size:14px; font-weight:600; color:var(--ink-soft); border:0; background:none; font-family:inherit; }
+  .tab.active{ background:var(--sage-dark); color:#fff; }
+  .card{ background:var(--card); border:1px solid var(--line); border-top:3px solid var(--sage); border-radius:4px; padding:20px 18px; display:none; }
+  .card.active{ display:block; }
+  ol{ list-style:none; counter-reset:s; padding:0; margin:0; }
+  li{ counter-increment:s; position:relative; padding:0 0 16px 42px; font-size:15px; }
+  li{ min-height:46px; }
+  li:last-child{ padding-bottom:0; min-height:30px; }
+  li::before{ content:counter(s); position:absolute; left:0; top:0; width:30px; height:30px; border-radius:50%; background:var(--sage-dark); color:#fff; font-weight:600; display:flex; align-items:center; justify-content:center; font-size:14px; }
+  li b{ color:var(--navy); }
+  .ico{ display:inline-block; vertical-align:-5px; width:22px; height:22px; border:1px solid var(--line); border-radius:5px; padding:2px; background:#F7F8F5; margin:0 2px; }
+  .note{ background:#F7F2E6; border-left:3px solid #C9A24B; padding:10px 12px; font-size:13.5px; margin:16px 0 0; border-radius:2px; }
+  .why{ font-size:13.5px; color:var(--ink-soft); margin:16px 0 0; text-align:center; }
+  .back{ display:block; text-align:center; margin:20px 0 10px; color:var(--sage-dark); font-weight:600; font-size:14px; }
+</style>
+<link rel="stylesheet" href="/theme.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">Passo a passo</div>
+  <h1>Instale o aplicativo no celular</h1>
+  <p class="lead">Sem loja de aplicativos. Leva menos de um minuto, ocupa quase nada de espaço e se atualiza sozinho.</p>
+
+  <div class="tabs" role="tablist">
+    <button class="tab" id="tIos" role="tab" onclick="show('ios')">iPhone</button>
+    <button class="tab" id="tAnd" role="tab" onclick="show('and')">Android</button>
+  </div>
+
+  <div class="card" id="cIos">
+    <ol>
+      <li>Abra o link do aplicativo no <b>Safari</b>, o navegador azul da Apple. Se você chegou por um link do Instagram, WhatsApp ou e-mail, toque em <b>Abrir no Safari</b> (ou copie o link e cole no Safari).</li>
+      <li>Toque no botão <b>Compartilhar</b>
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="#223449" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V4M8 8l4-4 4 4M6 11H5a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7a1 1 0 0 0-1-1h-1"/></svg>
+        (o quadrado com uma seta para cima). Nas versões mais novas do iPhone ele pode estar dentro do menu de três pontinhos <b>•••</b>, ao lado da barra de endereço.</li>
+      <li>Role a lista e toque em <b>Adicionar à Tela de Início</b>.</li>
+      <li>Confirme em <b>Adicionar</b>, no canto superior direito.</li>
+      <li>Pronto! O ícone do aplicativo aparece na sua tela inicial. Abra por ele, em tela cheia, e entre com seu e-mail e senha.</li>
+    </ol>
+    <div class="note">No iPhone, a instalação só funciona pelo <b>Safari</b>. Se a opção "Adicionar à Tela de Início" não aparecer, você provavelmente está em outro navegador ou dentro de um aplicativo (como o Instagram).</div>
+  </div>
+
+  <div class="card" id="cAnd">
+    <ol>
+      <li>Abra o link do aplicativo no <b>Chrome</b>. Se você chegou por um link do Instagram ou WhatsApp, toque nos três pontinhos e escolha <b>Abrir no Chrome</b> (ou copie o link e cole nele).</li>
+      <li>Toque no menu de <b>três pontinhos</b>
+        <svg class="ico" viewBox="0 0 24 24" fill="#223449" aria-hidden="true"><circle cx="12" cy="5" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="12" cy="19" r="1.8"/></svg>
+        no canto superior direito.</li>
+      <li>Toque em <b>Instalar app</b>. Em alguns celulares o nome é <b>Adicionar à tela inicial</b>.</li>
+      <li>Confirme em <b>Instalar</b>.</li>
+      <li>Pronto! O ícone aparece na tela inicial. Abra por ele e entre com seu e-mail e senha.</li>
+    </ol>
+    <div class="note">No Chrome também pode aparecer, dentro do aplicativo, um botão <b>Instalar o app</b>. Tocar nele faz o mesmo. Se você usa o navegador Samsung Internet, o caminho é parecido: menu, depois <b>Adicionar página a</b>, depois <b>Tela inicial</b>.</div>
+  </div>
+
+  <p class="why">Se algo não aparecer como descrito, você ainda pode usar o aplicativo normalmente pelo navegador. A instalação é só para ficar mais prático.</p>
+  <a class="back" href="/login.html">Voltar para entrar</a>
+</div>
+<script>
+  function isIOS(){ return /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); }
+  function show(k){
+    document.getElementById('cIos').classList.toggle('active', k === 'ios');
+    document.getElementById('cAnd').classList.toggle('active', k === 'and');
+    document.getElementById('tIos').classList.toggle('active', k === 'ios');
+    document.getElementById('tAnd').classList.toggle('active', k === 'and');
+    try{ history.replaceState(null, '', '#' + k); }catch(e){}
+  }
+  const h = (location.hash || '').replace('#', '');
+  show(h === 'ios' || h === 'and' ? h : (isIOS() ? 'ios' : 'and'));
+</script>
+</body>
+</html>
