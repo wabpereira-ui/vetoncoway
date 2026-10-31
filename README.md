@@ -344,3 +344,10 @@ Módulo `billing.js` + página **Pagamentos** no admin. Muda o plano do aluno so
 **Banco (aditivo):** tabela `billing_events`; colunas em `students`: `plan_until`, `billing_status`, `asaas_customer_id`, `billing_overdue_since`, `billing_warned_at`.
 
 **Trocar o link de pagamento:** campo "Link do botão Assinar" (`upgradeUrl`) em Planos e custos. Não exige alteração de código.
+
+## Aba Planos e modalidades
+
+- Admin → Planos e custos → **Modalidades do plano Assinante**: mensal, trimestral, semestral e anual (nome, preço exibido, link do Asaas, ativo, destaque) e links opcionais da mentoria e da capacitação. Tudo editável a qualquer momento (setting `planOffers`, `mentoriaUrl`, `capacitacaoUrl`).
+- Aluno: o botão "Conhecer o plano Assinante" / "Ver planos" (lateral e aviso de limite) abre uma janela com os ciclos, valor por mês e economia. Quem é da Mentoria não vê o botão. Se nenhuma modalidade estiver ativa, usa o link antigo (`upgradeUrl`).
+- O valor cobrado é o do link do Asaas: ao mudar um preço, mude nos dois lugares.
+- Endpoint: `GET /api/offers` (exige login de aluno).

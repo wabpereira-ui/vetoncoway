@@ -848,6 +848,25 @@ app.post('/api/logout', (req, res) => {
   destroySession(req, res);
   res.json({ ok: true });
 });
+// Modalidades do plano Assinante para a aba Planos do aluno.
+app.get('/api/offers', requireStudentApi, async (req, res) => {
+  try {
+    const cfg = await getSettings();
+    const info = await getUsageInfo(req.student.studentId);
+    const base = sanitizeOffers(cfg.planOffers).filter(o => o.active && o.link);
+    const monthly = base.find(o => o.key === 'mensal') || base[0];
+    const offers = base.map(o => {
+      const price = parseFloat(o.price), perMonth = price / o.months;
+      const ref = monthly ? parseFloat(monthly.price) : 0;
+      const savePct = ref > 0 && o.months > 1 ? Math.max(0, Math.round(100 * (1 - perMonth / ref))) : 0;
+      return { key: o.key, label: o.label, months: o.months, price, perMonth: Math.round(perMonth * 100) / 100, savePct, link: o.link, highlight: o.highlight };
+    });
+    const plans = JSON.parse(cfg.plans), a = plans.assinante;
+    res.json({ plan: info ? info.plan : null, planLabel: info ? info.planLabel : '', offers, fallbackUrl: cfg.upgradeUrl || '',
+      mentoriaUrl: cfg.mentoriaUrl || '', capacitacaoUrl: cfg.capacitacaoUrl || '',
+      features: { questions: a.questions, exams: a.exams, whatsapp: a.whatsapp, historyDays: a.historyDays } });
+  } catch (e) { console.error('offers:', e.message); res.status(500).json({ error: 'Não foi possível carregar.' }); }
+});
 app.get('/api/me', async (req, res) => {
   const session = getSession(req);
   if (!session) return res.status(401).json({ error: 'not_authenticated' });
@@ -1130,6 +1149,9 @@ const DEFAULT_SETTINGS = {
   billingWarnDays: '3',      // dias de atraso até o aviso por e-mail
   billingDowngradeDays: '7', // dias de atraso até voltar para o Grátis
   billingGraceDays: '2',     // tolerância depois do fim do período pago
+  planOffers: '',            // modalidades do plano Assinante (JSON); vazio = padrões
+  mentoriaUrl: '',           // links dos outros produtos, exibidos na aba Planos
+  capacitacaoUrl: '',
   upgradeUrl: '',            // para onde vai o botão "Assinar" (página de vendas/checkout)
   // Preços da API para ESTIMAR o custo (confira na Anthropic e ajuste): US$ por milhão de tokens e por mil buscas.
   priceInputPerM: '3', priceOutputPerM: '15', priceSearchPer1k: '10', usdBrl: '5.5',
@@ -1190,6 +1212,35 @@ const DEFAULT_PLANS = {
   mentoria:  { label: 'Mentoria',  questions: 1000, exams: 1000, historyDays: 0, chunks: 0, whatsapp: true }
 };
 const clampInt = (v, min, max, dflt) => { const n = Math.round(Number(v)); return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : dflt; };
+// Modalidades de cobrança do plano Assinante (mensal, trimestral...). O preço de verdade é o do link do Asaas;
+// aqui é o que aparece para o aluno.
+const OFFER_DEFAULTS = [
+  { key: 'mensal', label: 'Mensal', months: 1, price: '89.00', highlight: false },
+  { key: 'trimestral', label: 'Trimestral', months: 3, price: '240.00', highlight: false },
+  { key: 'semestral', label: 'Semestral', months: 6, price: '453.00', highlight: false },
+  { key: 'anual', label: 'Anual', months: 12, price: '855.00', highlight: true }
+];
+function sanitizeOffers(raw) {
+  let arr = [];
+  try { arr = typeof raw === 'string' && raw ? JSON.parse(raw) : (Array.isArray(raw) ? raw : []); } catch (e) {}
+  const by = {}; for (const o of (Array.isArray(arr) ? arr : [])) if (o && typeof o.key === 'string') by[o.key] = o;
+  const out = OFFER_DEFAULTS.map(d => {
+    const x = by[d.key] || {};
+    const n = parseFloat(String(x.price === undefined ? d.price : x.price).replace(',', '.'));
+    const link = String(x.link || '').trim().slice(0, 400);
+    return {
+      key: d.key, months: d.months,
+      label: String(x.label || d.label).trim().slice(0, 30) || d.label,
+      price: (Number.isFinite(n) && n >= 0 && n <= 100000 ? n : parseFloat(d.price)).toFixed(2),
+      link: /^https?:\/\//i.test(link) ? link : '',
+      active: x.active === undefined ? true : (x.active === true || x.active === 'true'),
+      highlight: x.highlight === undefined ? d.highlight : (x.highlight === true || x.highlight === 'true')
+    };
+  });
+  // só uma modalidade em destaque
+  let seen = false; for (const o of out) { if (o.highlight && !seen) seen = true; else o.highlight = false; }
+  return out;
+}
 function sanitizePlans(raw) {
   let p = {};
   try { p = typeof raw === 'string' && raw ? JSON.parse(raw) : (raw || {}); } catch (e) {}
@@ -1239,6 +1290,8 @@ async function getSettings() {
   for (const [k, list] of Object.entries(OPTIONS)) if (!list.includes(merged[k])) merged[k] = DEFAULT_SETTINGS[k];
   merged.quickLinks = sanitizeQuickLinks(merged.quickLinks);
   merged.plans = JSON.stringify(sanitizePlans(merged.plans));
+  merged.planOffers = JSON.stringify(sanitizeOffers(merged.planOffers));
+  for (const k of ['mentoriaUrl', 'capacitacaoUrl']) if (!/^https?:\/\//i.test(merged[k])) merged[k] = '';
   merged.freeExamsOnce = String(clampInt(merged.freeExamsOnce, 0, 100, 5));
   if (!/^https?:\/\//i.test(merged.upgradeUrl)) merged.upgradeUrl = '';
   merged.priceInputPerM = cleanNum(merged.priceInputPerM, '3', 1000);
@@ -1257,7 +1310,7 @@ async function saveSettings(input) {
   const clean = {};
   const limits = { appName: 60, tagline: 160, mentorName: 80, mentorTitle: 100, voice: 1500, searchMode: 20,
     primaryColor: 7, accentColor: 7, fontHeading: 10, radius: 10, showEntryCards: 3, quickLinks: 2500,
-    plans: 4000, freeExamsOnce: 4, upgradeUrl: 300, signupOpen: 3, supportEmail: 160, termsText: 20000, privacyText: 20000, priceInputPerM: 10, priceOutputPerM: 10, priceSearchPer1k: 10, usdBrl: 10, billingWarnDays: 3, billingDowngradeDays: 3, billingGraceDays: 3 };
+    plans: 4000, freeExamsOnce: 4, upgradeUrl: 300, signupOpen: 3, supportEmail: 160, termsText: 20000, privacyText: 20000, priceInputPerM: 10, priceOutputPerM: 10, priceSearchPer1k: 10, usdBrl: 10, planOffers: 4000, mentoriaUrl: 300, capacitacaoUrl: 300, billingWarnDays: 3, billingDowngradeDays: 3, billingGraceDays: 3 };
   for (const k of Object.keys(DEFAULT_SETTINGS)) {
     if (typeof input[k] === 'string') clean[k] = input[k].trim().slice(0, limits[k]);
   }
@@ -1266,6 +1319,8 @@ async function saveSettings(input) {
   for (const [k, list] of Object.entries(OPTIONS)) if (clean[k] !== undefined && !list.includes(clean[k])) delete clean[k];
   if (clean.quickLinks !== undefined) clean.quickLinks = sanitizeQuickLinks(input.quickLinks);
   if (input.plans !== undefined) clean.plans = JSON.stringify(sanitizePlans(input.plans));
+  if (input.planOffers !== undefined) clean.planOffers = JSON.stringify(sanitizeOffers(input.planOffers));
+  for (const k of ['mentoriaUrl', 'capacitacaoUrl']) if (clean[k] !== undefined && clean[k] && !/^https?:\/\//i.test(clean[k])) delete clean[k];
   if (clean.signupOpen !== undefined && !['sim', 'nao'].includes(clean.signupOpen)) delete clean.signupOpen;
   if (clean.supportEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean.supportEmail)) delete clean.supportEmail;
   if (clean.freeExamsOnce !== undefined) clean.freeExamsOnce = String(clampInt(clean.freeExamsOnce, 0, 100, 5));
