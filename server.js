@@ -731,6 +731,44 @@ app.get('/brand/:key', async (req, res) => {
   } catch (e) { res.status(500).end(); }
 });
 
+// ---------- Tema compartilhado (/theme.css) ----------
+// Uma única fonte de variáveis CSS para login, redefinição de senha, app dos alunos e painel admin.
+// Inclui guarda de contraste: se a cor escolhida deixar o texto branco ilegível, escurece até ficar legível.
+function _rgb(hex) { const n = parseInt(hex.slice(1), 16); return [n >> 16, (n >> 8) & 255, n & 255]; }
+function _hex(c) { return '#' + c.map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join(''); }
+function _lum(hex) { const f = v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }; const [r, g, b] = _rgb(hex).map(f); return 0.2126 * r + 0.7152 * g + 0.0722 * b; }
+function contrastOnWhite(hex) { return 1.05 / (_lum(hex) + 0.05); }
+function darkenHex(hex, f) { return _hex(_rgb(hex).map(v => v * (1 - f))); }
+// Escurece em passos até o texto branco ter contraste mínimo sobre a cor.
+function ensureContrastWithWhite(hex, min) {
+  let h = hex;
+  for (let i = 0; i < 60 && contrastOnWhite(h) < min; i++) h = darkenHex(h, 0.03); // passos pequenos: preserva ao máximo o tom escolhido
+  return h;
+}
+function buildTheme(cfg) {
+  const D = DEFAULT_SETTINGS;
+  const pick = (v, d) => (HEX.test(v || '') ? v : d);
+  const navy = ensureContrastWithWhite(pick(cfg.primaryColor, D.primaryColor), 7);
+  const sage = pick(cfg.accentColor, D.accentColor);
+  // Com a cor padrão mantém exatamente o tom que as páginas já usavam (nenhuma mudança visual).
+  const sageDark = sage.toLowerCase() === D.accentColor.toLowerCase() ? '#3F5C50' : ensureContrastWithWhite(darkenHex(sage, 0.25), 4.5);
+  const r = { reto: '3px', suave: '8px', redondo: '14px' }[cfg.radius] || '3px';
+  return { navy, sage, sageDark, r };
+}
+app.get('/theme.css', async (req, res) => {
+  try {
+    const t = buildTheme(await getSettings());
+    const css = `:root{--navy:${t.navy};--sage:${t.sage};--sage-dark:${t.sageDark};--r:${t.r};}\n`;
+    const etag = '"t-' + crypto.createHash('sha1').update(css).digest('hex').slice(0, 16) + '"';
+    res.set('Content-Type', 'text/css; charset=utf-8');
+    res.set('Cache-Control', 'no-cache'); // sempre revalida (304 quando nada mudou), então o PWA recebe a mudança logo
+    res.set('ETag', etag);
+    res.set('X-Content-Type-Options', 'nosniff');
+    if (req.headers['if-none-match'] === etag) return res.status(304).end();
+    res.send(css);
+  } catch (e) { res.type('text/css').send('/* tema padrão */'); }
+});
+
 // ---------- PWA: app instalável no celular ----------
 app.get('/manifest.webmanifest', async (req, res) => {
   try {
@@ -1253,12 +1291,104 @@ const ASSET_MIMES = ['image/png', 'image/jpeg', 'image/webp', 'image/svg+xml'];
 const ASSET_MAX_BYTES = 1.5 * 1024 * 1024;
 const readJson = (p, fallback) => { try { return fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : fallback; } catch (e) { return fallback; } };
 
-function parseDataUrl(dataUrl) {
-  const m = /^data:([a-z0-9.+\/-]+);base64,([A-Za-z0-9+\/=]+)$/i.exec(String(dataUrl || ''));
-  if (!m || !ASSET_MIMES.includes(m[1].toLowerCase())) return null;
-  const bytes = Math.floor(m[2].length * 3 / 4);
-  if (bytes > ASSET_MAX_BYTES) return null;
-  return { mime: m[1].toLowerCase(), data: m[2] };
+// ---------- Validação de imagens enviadas pelo admin ----------
+// Confere o conteúdo real do arquivo (não confia no tipo informado pelo navegador), os limites de
+// tamanho e dimensões, e recusa SVG com qualquer coisa executável ou que busque conteúdo externo.
+const ASSET_MAX_SVG_BYTES = 200 * 1024;
+const ASSET_MAX_DIM = 4096;      // lado máximo (px) de PNG/JPG/WebP
+const ICON_MIN_DIM = 144;        // ícones do app: PNG quadrado, no mínimo 144 px
+function sniffImage(buf) {
+  if (buf.length >= 8 && buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
+  if (buf.length >= 12 && buf.toString('latin1', 0, 4) === 'RIFF' && buf.toString('latin1', 8, 12) === 'WEBP') return 'image/webp';
+  const head = buf.toString('utf8', 0, Math.min(buf.length, 2048)).replace(/^﻿/, '').trimStart();
+  if (/^(<\?xml[^>]*\?>\s*)?(<!--[\s\S]*?-->\s*)*(<!DOCTYPE[^>]*>\s*)?(<!--[\s\S]*?-->\s*)*<svg[\s>]/i.test(head)) return 'image/svg+xml';
+  return null;
+}
+// Lê largura e altura do próprio arquivo; devolve null se o cabeçalho estiver corrompido.
+function imageSize(buf, mime) {
+  try {
+    if (mime === 'image/png') {
+      if (buf.length < 24 || buf.toString('latin1', 12, 16) !== 'IHDR') return null;
+      return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) };
+    }
+    if (mime === 'image/jpeg') {
+      let p = 2;
+      while (p + 9 < buf.length) {
+        if (buf[p] !== 0xff) { p++; continue; }
+        const m = buf[p + 1];
+        if (m === 0xff) { p++; continue; }
+        if (m === 0xd8 || (m >= 0xd0 && m <= 0xd7) || m === 0x01) { p += 2; continue; }
+        const len = buf.readUInt16BE(p + 2);
+        if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) return { h: buf.readUInt16BE(p + 5), w: buf.readUInt16BE(p + 7) };
+        p += 2 + len;
+      }
+      return null;
+    }
+    if (mime === 'image/webp') {
+      const kind = buf.toString('latin1', 12, 16);
+      if (kind === 'VP8 ') return { w: buf.readUInt16LE(26) & 0x3fff, h: buf.readUInt16LE(28) & 0x3fff };
+      if (kind === 'VP8L') { const b = buf.readUInt32LE(21); return { w: (b & 0x3fff) + 1, h: ((b >> 14) & 0x3fff) + 1 }; }
+      if (kind === 'VP8X') return { w: (buf.readUIntLE(24, 3)) + 1, h: (buf.readUIntLE(27, 3)) + 1 };
+      return null;
+    }
+  } catch (e) { return null; }
+  return null;
+}
+// SVG: recusa (em vez de "consertar") qualquer recurso ativo ou externo.
+function svgProblem(text) {
+  const t = text.replace(/^﻿/, '');
+  if (!/<\/svg\s*>\s*(<!--[\s\S]*?-->\s*)*$/i.test(t)) return 'o SVG está incompleto ou tem conteúdo depois do fechamento';
+  if (/<!ENTITY|<!DOCTYPE[^>]*\[/i.test(t)) return 'o SVG usa declarações internas (entidades) não permitidas';
+  if (/<\s*(script|foreignObject|iframe|embed|object|audio|video|link|meta|animate|set|handler|listener)\b/i.test(t)) return 'o SVG contém elementos ativos (script, animação ou conteúdo incorporado)';
+  if (/\son[a-z]+\s*=/i.test(t)) return 'o SVG contém eventos de script';
+  if (/javascript\s*:|vbscript\s*:/i.test(t)) return 'o SVG contém links de script';
+  if (/@import/i.test(t)) return 'o SVG importa estilos externos';
+  // Referências: só âncoras internas (#id) ou imagens PNG/JPG/WebP embutidas em base64.
+  for (const m of t.matchAll(/(?:xlink:)?href\s*=\s*(["'])(.*?)\1/gis)) {
+    const v = m[2].trim();
+    if (v.startsWith('#')) continue;
+    if (/^data:image\/(png|jpe?g|webp);base64,[A-Za-z0-9+\/=\s]+$/i.test(v)) continue;
+    return 'o SVG referencia endereços externos ou dados não permitidos';
+  }
+  for (const m of t.matchAll(/url\(\s*(["']?)(.*?)\1\s*\)/gis)) {
+    const v = m[2].trim();
+    if (v.startsWith('#')) continue;
+    if (/^data:image\/(png|jpe?g|webp);base64,/i.test(v)) continue;
+    return 'o SVG referencia endereços externos';
+  }
+  return null;
+}
+// Devolve { mime, data } (data em base64) ou { error } com a explicação em português.
+function parseDataUrl(dataUrl, key) {
+  const raw = String(dataUrl || '');
+  if (raw.length > ASSET_MAX_BYTES * 1.4 + 200) return { error: 'Imagem maior que 1,5 MB.' };
+  const m = /^data:([a-z0-9.+\/-]+);base64,([A-Za-z0-9+\/]+={0,2})$/i.exec(raw);
+  if (!m) return { error: 'Arquivo de imagem inválido.' };
+  const declared = m[1].toLowerCase();
+  if (!ASSET_MIMES.includes(declared)) return { error: 'Formato não permitido. Use PNG, JPG, WebP ou SVG.' };
+  const buf = Buffer.from(m[2], 'base64');
+  if (!buf.length || buf.toString('base64') !== m[2]) return { error: 'Arquivo de imagem corrompido.' };
+  const real = sniffImage(buf);
+  if (!real) return { error: 'O conteúdo do arquivo não é uma imagem PNG, JPG, WebP ou SVG válida.' };
+  if (real !== declared) return { error: 'O conteúdo do arquivo não corresponde ao formato informado.' };
+  const isIcon = key === 'icon192' || key === 'icon512';
+  if (isIcon && real !== 'image/png') return { error: 'O ícone do app precisa ser PNG.' };
+  if (real === 'image/svg+xml') {
+    if (buf.length > ASSET_MAX_SVG_BYTES) return { error: 'SVG maior que 200 KB. Simplifique o desenho ou envie PNG.' };
+    const prob = svgProblem(buf.toString('utf8'));
+    if (prob) return { error: 'SVG recusado: ' + prob + '. Exporte novamente como SVG simples ou envie PNG.' };
+  } else {
+    if (buf.length > ASSET_MAX_BYTES) return { error: 'Imagem maior que 1,5 MB.' };
+    const sz = imageSize(buf, real);
+    if (!sz || !sz.w || !sz.h) return { error: 'Não consegui ler as dimensões da imagem; o arquivo parece corrompido.' };
+    if (sz.w > ASSET_MAX_DIM || sz.h > ASSET_MAX_DIM) return { error: `Imagem muito grande (${sz.w}×${sz.h}px). O máximo é ${ASSET_MAX_DIM}px de lado.` };
+    if (isIcon) {
+      if (sz.w !== sz.h) return { error: 'O ícone do app precisa ser quadrado.' };
+      if (sz.w < ICON_MIN_DIM) return { error: `O ícone do app precisa ter pelo menos ${ICON_MIN_DIM}px.` };
+    }
+  }
+  return { mime: real, data: m[2] };
 }
 function validAssetKey(key) { return ASSET_KEYS.includes(key) || /^banner-[a-z0-9]{6,20}$/.test(key); }
 
@@ -1678,6 +1808,9 @@ app.delete('/api/conversations/:id', requireStudentApi, async (req, res) => {
 
 // ---------- Área da mentora: acervo ----------
 
+// Arquivos da tela Aparência (só para o administrador).
+app.get('/admin/aparencia.js', requireAdmin, (req, res) => { res.set('Cache-Control', 'no-cache'); res.type('application/javascript').sendFile(path.join(__dirname, 'admin', 'aparencia.js')); });
+app.get('/admin/aparencia.css', requireAdmin, (req, res) => { res.set('Cache-Control', 'no-cache'); res.type('text/css').sendFile(path.join(__dirname, 'admin', 'aparencia.css')); });
 app.get('/admin', requireAdmin, (req, res) => {
   res.sendFile(path.join(__dirname, 'admin', 'admin.html'));
 });
@@ -1732,32 +1865,47 @@ app.get('/api/admin/settings', requireAdmin, async (req, res) => {
   res.json({ settings: await getSettings(), defaults: DEFAULT_SETTINGS, modes: SEARCH_MODES, mail: { configured: mailConfigured(), from: MAIL_FROM || '', provider: mailProvider() } });
 });
 app.post('/api/admin/settings', requireAdmin, async (req, res) => {
-  try { res.json({ ok: true, settings: await saveSettings(req.body || {}) }); }
+  try {
+    const body = { ...(req.body || {}) };
+    // Cores, estilo e links rápidos só mudam pelo rascunho + publicação (com banco de dados).
+    if (useDb) for (const k of ['primaryColor', 'accentColor', 'fontHeading', 'radius', 'showEntryCards', 'quickLinks']) delete body[k];
+    res.json({ ok: true, settings: await saveSettings(body) });
+  }
   catch (e) { console.error(e); res.status(500).json({ error: 'Não foi possível salvar.' }); }
 });
 
+// Itens visuais (logotipos, ícones, banners) só mudam pelo rascunho + publicação (/api/admin/appearance/...).
+const DRAFT_ONLY_MSG = { error: 'Alterações visuais agora passam pelo rascunho: use Aparência > Salvar rascunho e Publicar.' };
 app.post('/api/admin/assets/:key', requireAdmin, async (req, res) => {
   const key = req.params.key;
   if (!validAssetKey(key)) return res.status(400).json({ error: 'Chave inválida.' });
-  const parsed = parseDataUrl(req.body && req.body.dataUrl);
-  if (!parsed) return res.status(400).json({ error: 'Imagem inválida ou maior que 1,5 MB (use PNG, JPG, WebP ou SVG).' });
+  if (useDb) return res.status(409).json(DRAFT_ONLY_MSG);
+  const parsed = parseDataUrl(req.body && req.body.dataUrl, key);
+  if (parsed.error) return res.status(400).json({ error: parsed.error }); // nada é gravado: a imagem atual continua intacta
   await setAsset(key, parsed.mime, parsed.data);
   res.json({ ok: true });
 });
 app.delete('/api/admin/assets/:key', requireAdmin, async (req, res) => {
   if (!validAssetKey(req.params.key)) return res.status(400).json({ error: 'Chave inválida.' });
+  if (useDb) return res.status(409).json(DRAFT_ONLY_MSG);
   await deleteAsset(req.params.key);
   res.json({ ok: true });
 });
+// Rascunho / publicação / reversão da aparência (infraestrutura; ver appearance.js).
+require('./appearance')({ app, pool, useDb, requireAdmin, parseDataUrl, DEFAULT_SETTINGS, OPTIONS, HEX, sanitizeQuickLinks,
+  buildTheme, randomId: () => 'banner-' + crypto.randomBytes(5).toString('hex'),
+  invalidateCaches: () => { _settingsCache = null; _brandingCache = null; } });
 app.get('/api/admin/banners', requireAdmin, async (req, res) => {
   const versions = await assetVersions();
   res.json((await listBanners()).map(b => ({ ...b, image: versions[b.id] ? `/brand/${b.id}?v=${versions[b.id]}` : null })));
 });
 app.post('/api/admin/banners', requireAdmin, async (req, res) => {
+  if (useDb) return res.status(409).json(DRAFT_ONLY_MSG);
   res.json({ ok: true, banner: await saveBanner(req.body || {}) });
 });
 app.delete('/api/admin/banners/:id', requireAdmin, async (req, res) => {
   if (!/^banner-[a-z0-9]{6,20}$/.test(req.params.id)) return res.status(400).json({ error: 'id inválido' });
+  if (useDb) return res.status(409).json(DRAFT_ONLY_MSG);
   await deleteBanner(req.params.id);
   res.json({ ok: true });
 });

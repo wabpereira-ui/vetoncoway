@@ -292,3 +292,27 @@ deploy — é mais rápido resolver problemas de configuração em conjunto na p
 - Ícone: admin → Aparência → "Ícone do app" (gerar a partir do logotipo, enviar PNG ou voltar ao padrão). Sem ícone enviado, usa `public/icons/default-*.png`.
 - `/manifest.webmanifest` e `/sw.js` são gerados pelo servidor. O service worker não guarda dados (só mostra aviso offline), então nada fica desatualizado.
 - Não substitui a publicação nas lojas (Apple/Google); serve para instalar direto pelo navegador.
+
+## Segurança dos uploads de imagem
+- Aceita PNG, JPG, WebP e SVG. O tipo é conferido pelo **conteúdo real** do arquivo (não pelo nome nem pelo tipo informado pelo navegador); se não bater, o envio é recusado.
+- Limites: 1,5 MB para PNG/JPG/WebP (até 4096 px de lado) e 200 KB para SVG. Ícone do app: PNG quadrado, mínimo 144 px.
+- SVG: é recusado (não "consertado") se tiver script, eventos (`onclick`...), `foreignObject`, animações, entidades, `@import` ou qualquer referência externa. Imagens PNG/JPG/WebP embutidas em base64 e referências internas (`#id`) são permitidas. SVGs exportados com entidades antigas (alguns do Illustrator) podem ser recusados: exporte como "SVG simples" ou envie PNG.
+- A validação acontece antes de gravar: um arquivo inválido nunca substitui a imagem atual.
+- As imagens já salvas não são alteradas nem revalidadas.
+
+## Rascunho, publicação e reversão da aparência (infraestrutura, `appearance.js`)
+Ainda sem tela própria (virá na etapa 4). Todas as rotas exigem o login de administrador e o banco (Supabase):
+- `GET /api/admin/appearance`: estado (publicado, rascunho, alterações, versão anterior).
+- `PUT /api/admin/appearance/draft`: salva cores/estilo/links no rascunho. `POST|DELETE /api/admin/appearance/draft/image/:key` (+ `/undo`): imagem nova, remoção ou desfazer no rascunho. Valem as mesmas regras de segurança dos uploads.
+- `POST .../draft/restore-defaults` (`{"includeImages":true}` opcional) e `POST .../draft/discard`: só mexem no rascunho.
+- `POST .../publish` e `POST .../revert` com `{"confirm":true}`: rodam numa única transação (tudo ou nada). Publicar guarda o que estava publicado como "versão anterior"; reverter troca as duas (dá para desfazer a reversão).
+- O rascunho guarda só as diferenças; as imagens dele ficam no banco com chaves internas que `/brand` não serve. Banners continuam sendo editados direto (não passam pelo rascunho).
+- O que já está publicado não é migrado nem alterado: o sistema só lê `app_settings` e `app_assets` como sempre.
+
+## Tela Aparência (etapa 4)
+- Quatro áreas: **Marca e imagens**, **Cores e estilo**, **Pré-visualização** (login, área dos alunos e painel; computador e celular) e **Banners e links rápidos**. Arquivos: `admin/aparencia.js` e `admin/aparencia.css` (servidos só ao administrador).
+- Tudo passa pelo rascunho: **Salvar rascunho**, **Publicar alterações** (com confirmação), **Restaurar padrão** (só no rascunho), **Reverter publicação** (com confirmação) e **Descartar rascunho**. Os alunos só veem mudanças depois de publicar.
+- Com banco de dados, as rotas antigas de escrita direta (`/api/admin/assets`, `/api/admin/banners` e as chaves visuais de `/api/admin/settings`) foram bloqueadas/ignoradas; nome, mentora, IA, planos e demais configurações continuam salvando como antes.
+- Banners em rascunho ficam dentro do próprio registro do rascunho (sem tabelas novas) e entram na publicação/reversão junto com o resto.
+- A proteção de contraste agora escurece em passos de 3% (preserva mais a cor escolhida) e o painel mostra a cor escolhida e a efetivamente aplicada.
+- O painel passou a ter `viewport` para funcionar bem no celular.
