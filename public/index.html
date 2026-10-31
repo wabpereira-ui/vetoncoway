@@ -113,6 +113,8 @@
   @supports (height:100dvh){ .app{ min-height:100dvh; } .main{ min-height:100dvh; } .sidebar{ min-height:100dvh; } }
   @media (max-width:760px){ .composer{ padding-bottom:calc(16px + env(safe-area-inset-bottom)); } .footnote{ padding-bottom:calc(14px + env(safe-area-inset-bottom)); } }
   .brand-logo{ display:block; max-width:100%; max-height:44px; margin-bottom:10px; }
+  /* Foto da mentora no topo da barra lateral (usa a foto cadastrada em Aparência) */
+  .brand-logo.brand-photo{ width:68px; height:68px; max-width:68px; max-height:68px; border-radius:50%; object-fit:cover; object-position:center; border:1.5px solid var(--sage); background:#fff; margin:0 0 10px; flex-shrink:0; }
   #quickLinks a{ display:block; font-size:12.5px; color:var(--sage-dark); text-decoration:none; padding:3px 0; }
   #quickLinks a:hover{ text-decoration:underline; }
   .entry-cards{ display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:10px; margin-top:18px; text-align:left; }
@@ -160,6 +162,7 @@
   .btn:hover{ background:var(--navy); }
   .footnote{ font-size:11px; color:var(--ink-soft); padding:0 28px 14px; font-family:'IBM Plex Mono',monospace; max-width:820px; margin:0 auto; width:100%; }
 </style>
+<link rel="stylesheet" href="/theme.css">
 </head>
 <body>
 <button class="sidebar-toggle" id="sidebarToggle" onclick="toggleSidebar()">☰</button>
@@ -302,8 +305,8 @@ function darken(hex, f){
 }
 function applyTheme(b){
   const root = document.documentElement.style;
-  if(b.primaryColor){ root.setProperty('--navy', b.primaryColor); const tc = document.querySelector('meta[name=theme-color]'); if(tc) tc.setAttribute('content', b.primaryColor); }
-  if(b.accentColor){ root.setProperty('--sage', b.accentColor); root.setProperty('--sage-dark', darken(b.accentColor, 0.25)); }
+  // As cores vêm de /theme.css (com guarda de contraste); aqui só sincroniza a cor da barra do celular.
+  const tc = document.querySelector('meta[name=theme-color]'); const nv = getComputedStyle(document.documentElement).getPropertyValue('--navy').trim(); if(tc && nv) tc.setAttribute('content', nv);
   const r = { reto:'3px', suave:'8px', redondo:'14px' }[b.radius] || '3px';
   root.setProperty('--r', r);
   const st = document.createElement('style');
@@ -413,7 +416,9 @@ async function loadBranding(){
     renderBanners(BRAND.banners || []);
     renderQuickLinks(BRAND.quickLinks || []);
     if(BRAND.supportEmail) document.getElementById('supportLine').innerHTML = ' · <a href="mailto:' + escapeHtml(BRAND.supportEmail) + '">Contato</a>';
-    if(BRAND.logo){ const lg = document.getElementById('brandLogo'); lg.src = BRAND.logo; lg.style.display = 'block'; }
+    // Foto da mentora (se cadastrada); senão, o logotipo atual.
+    { const lg = document.getElementById('brandLogo'), pic = BRAND.photo || BRAND.logo;
+      if(pic){ lg.src = pic; lg.classList.toggle('brand-photo', !!BRAND.photo); lg.alt = BRAND.photo ? (BRAND.mentorName || '') : ''; lg.style.display = 'block'; } }
     document.title = BRAND.appName;
     document.getElementById('brandName').textContent = BRAND.appName;
     document.getElementById('brandEyebrow').textContent = BRAND.mentorName + (BRAND.mentorTitle ? ' · ' + BRAND.mentorTitle : '');

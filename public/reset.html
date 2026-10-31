@@ -24,6 +24,7 @@
   button:hover{ background:var(--navy); }
   .error{ color:var(--alert); font-size:12.5px; margin-top:12px; text-align:center; min-height:16px; }
 </style>
+<link rel="stylesheet" href="/theme.css">
 </head>
 <body>
   <div class="card">
@@ -43,8 +44,7 @@
     const r = await fetch('/api/branding'); if(!r.ok) return; const b = await r.json();
     const dk = (h,f)=>{const n=parseInt(h.slice(1),16);return '#'+[n>>16,(n>>8)&255,n&255].map(v=>Math.round(v*(1-f)).toString(16).padStart(2,'0')).join('');};
     const root = document.documentElement.style;
-    if(b.primaryColor) root.setProperty('--navy', b.primaryColor);
-    if(b.accentColor){ root.setProperty('--sage', b.accentColor); root.setProperty('--sage-dark', dk(b.accentColor,0.25)); }
+    // cores vêm de /theme.css
     document.title = 'Redefinir senha — ' + b.appName;
   }catch(e){}
 })();

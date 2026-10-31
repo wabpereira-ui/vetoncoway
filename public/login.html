@@ -63,6 +63,7 @@
   .form{ display:none; }
   .form.active{ display:block; }
 </style>
+<link rel="stylesheet" href="/theme.css">
 </head>
 <body>
   <div class="card">
@@ -132,8 +133,7 @@
     document.getElementById('bName').textContent = b.appName;
     const root = document.documentElement.style;
     const dk = (h,f)=>{const n=parseInt(h.slice(1),16);return '#'+[n>>16,(n>>8)&255,n&255].map(v=>Math.round(v*(1-f)).toString(16).padStart(2,'0')).join('');};
-    if(b.primaryColor) root.setProperty('--navy', b.primaryColor);
-    if(b.accentColor){ root.setProperty('--sage', b.accentColor); root.setProperty('--sage-dark', dk(b.accentColor,0.25)); }
+    // cores vêm de /theme.css
     if(b.logo){ const e=document.getElementById('bLogo'); e.src=b.logo; e.style.display='block'; document.getElementById('bName').style.display='none'; }
     if(b.signupOpen){ document.getElementById('tabSignup').style.display = ''; if(location.hash === '#criar-conta') showForm('signup'); }
     if(b.photo){ const e=document.getElementById('bPhoto'); e.src=b.photo; e.style.display='block'; }
