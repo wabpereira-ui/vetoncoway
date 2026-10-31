@@ -114,7 +114,7 @@
     <button class="nav" id="tabBtn-acervo" onclick="showPage('acervo')">📚 Acervo</button>
     <button class="nav" id="tabBtn-triagem" onclick="showPage('triagem')">🔎 Triagem e doses <span class="bdg" id="bdg-triagem" style="display:none;"></span></button>
     <div class="grp">Pessoas</div>
-    <button class="nav" id="tabBtn-alunos" onclick="showPage('alunos')">🎓 Alunos</button>
+    <button class="nav" id="tabBtn-alunos" onclick="showPage('alunos')">🎓 Alunos <span class="bdg" id="bdg-alunos" style="display:none;"></span></button>
     <div class="grp">Negócio</div>
     <button class="nav" id="tabBtn-planos" onclick="showPage('planos')">💳 Planos e custos</button>
     <button class="nav" id="tabBtn-pagamentos" onclick="showPage('pagamentos')">🧾 Pagamentos</button>
@@ -215,6 +215,7 @@
           <option value="novos7">Cadastrados nos últimos 7 dias</option>
           <option value="novos30">Cadastrados nos últimos 30 dias</option>
           <option value="oportunidade">Grátis perto do limite (possíveis assinantes)</option>
+          <option value="aprovacao">Aguardando aprovação (atestado)</option>
           <option value="atrasado">Pagamento atrasado</option>
           <option value="cancelado">Assinatura cancelada (ainda com acesso)</option>
         </select>
@@ -651,6 +652,7 @@ function studentMatches(s, filter){
   if(filter === 'novos7') return createdMs(s) !== null && Date.now() - createdMs(s) < 7 * day;
   if(filter === 'novos30') return createdMs(s) !== null && Date.now() - createdMs(s) < 30 * day;
   if(filter === 'oportunidade') return nearFreeLimit(s);
+  if(filter === 'aprovacao') return s.accessStatus === 'pending';
   if(filter === 'atrasado') return s.billingStatus === 'overdue';
   if(filter === 'cancelado') return s.billingStatus === 'canceled';
   if(filter === 'pendente') return !s.passwordSet;
@@ -725,6 +727,8 @@ function drawStudents(){
     const lead = nearFreeLimit(s) ? '<span class="badge warn">perto do limite</span>' : '';
     badge += lead;
     badge += billingBadge(s);
+    if(s.accessStatus === 'pending') badge += '<span class="badge warn">aguardando aprovação</span>';
+    if(s.accessStatus === 'rejected') badge += '<span class="badge warn">atestado recusado</span>';
     const access = s.lastLogin ? `último acesso: ${timeAgoAnalytics(s.lastLogin)} · ${s.loginCount||0} login(s)` : 'sem acessos ainda';
     const phoneLabel = s.phone ? `WhatsApp: ${escapeHtml(s.phone)}` : 'sem WhatsApp';
     const card = document.createElement('div');
@@ -733,6 +737,8 @@ function drawStudents(){
     card.innerHTML = `<div class="doc-name">${escapeHtml(s.name)}${badge}</div>
       <div class="doc-meta">${escapeHtml(s.email)} · ${phoneLabel}</div>
       <div class="doc-meta">${since}</div>
+      ${s.crmv ? `<div class="doc-meta">CRMV ${escapeHtml(s.crmv)}/${escapeHtml(s.crmvUf)}</div>` : ''}
+      ${s.accessStatus === 'pending' ? `<div style="margin:6px 0;display:flex;gap:6px;flex-wrap:wrap;"><a class="btn ghost" style="padding:6px 10px;" href="/api/admin/students/${s.id}/proof" target="_blank" rel="noopener">Ver atestado</a><button class="btn" style="padding:6px 10px;position:static;" onclick="decideAccess('${s.id}','approve')">Aprovar</button><button class="btn ghost" style="padding:6px 10px;position:static;" onclick="decideAccess('${s.id}','reject')">Recusar</button></div>` : ''}
       <div class="doc-meta">${access}</div>
       ${s.monthQuestions !== undefined ? `<div class="doc-meta">neste mês: ${s.monthQuestions} pergunta(s), ${s.monthExams} exame(s) · custo estimado ${fmtMoney(s.monthCostUsd)}</div>` : ''}
       <div style="margin-top:6px;"><select style="width:auto;margin:0;padding:4px 8px;font-size:12px;" onchange="setPlan('${s.id}', this.value)">
@@ -754,9 +760,10 @@ async function setPlan(id, plan){
 }
 function exportStudentsCsv(){
   const q = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
-  const rows = [['Nome','E-mail','WhatsApp','Plano','Status','Cadastro em','Origem','Último acesso','Logins','Perguntas no mês','Exames no mês']].concat(filteredStudents().map(s => [
+  const rows = [['Nome','E-mail','WhatsApp','Plano','Status','Cadastro em','Origem','CRMV','Atestado','Último acesso','Logins','Perguntas no mês','Exames no mês']].concat(filteredStudents().map(s => [
     s.name, s.email, s.phone || '', PLAN_NAMES[s.plan || 'mentoria'], !s.passwordSet ? 'aguardando primeiro acesso' : (s.lastLogin ? 'ativo' : 'nunca entrou'),
     s.createdAt ? new Date(s.createdAt).toLocaleDateString('pt-BR') : '', s.source === 'cadastro' ? 'cadastro próprio' : 'convite',
+    s.crmv ? s.crmv + '/' + s.crmvUf : '', s.accessStatus === 'pending' ? 'aguardando' : (s.accessStatus === 'rejected' ? 'recusado' : ''),
     s.lastLogin ? new Date(s.lastLogin).toLocaleString('pt-BR') : '', s.loginCount || 0, s.monthQuestions || 0, s.monthExams || 0]));
   const csv = '\uFEFF' + rows.map(r => r.map(q).join(';')).join('\r\n');
   const a = document.createElement('a');
@@ -994,6 +1001,19 @@ async function loadPlans(){
     ? b.topStudents.map(r => `<div class="doc-card"><div class="doc-name">${escapeHtml(r.name)}<span class="badge">${escapeHtml(PLAN_NAMES[r.plan] || r.plan)}</span></div><div class="doc-meta">${escapeHtml(r.email)} · ${r.n} uso(s) · ${fmtMoney(r.cost)}</div></div>`).join('')
     : '<div class="status">Ainda sem uso registrado neste mês.</div>';
 }
+async function refreshAccessBadge(){
+  try{ const r = await fetch('/api/admin/access-pending'); if(r.ok) setBadge('bdg-alunos', (await r.json()).count); }catch(e){}
+}
+async function decideAccess(id, action){
+  let note = '';
+  if(action === 'approve'){ if(!confirm('Aprovar este cadastro e liberar o acesso?')) return; }
+  else { const n = prompt('Motivo da recusa (o aluno recebe por e-mail). Pode deixar em branco:', ''); if(n === null) return; note = n; }
+  const res = await fetch('/api/admin/students/' + id + '/access', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action, note }) });
+  if(!res.ok){ const d = await res.json().catch(() => ({})); alert(d.error || 'Não foi possível concluir.'); return; }
+  const r2 = await fetch('/api/admin/students'); if(r2.ok) renderStudents(await r2.json());
+  refreshAccessBadge();
+}
+refreshAccessBadge();
 function offerPerMonth(inp){
   const tr = inp.closest('tr'), n = parseFloat(String(inp.value).replace(',', '.')) / parseInt(tr.dataset.months, 10);
   tr.querySelector('.opm').textContent = isFinite(n) ? 'R$ ' + n.toFixed(2).replace('.', ',') : '—';
