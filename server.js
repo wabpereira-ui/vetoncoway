@@ -817,6 +817,7 @@ self.addEventListener('fetch', e => {
 `);
 });
 
+app.get('/instalar', (req, res) => { res.sendFile(path.join(__dirname, 'public', 'instalar.html')); });
 app.get('/login.html', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'login.html'));
 });

@@ -361,3 +361,6 @@ Módulo `billing.js` + página **Pagamentos** no admin. Muda o plano do aluno so
 - Convidados e alunos de mentoria não são afetados. Contas de cadastro próprio criadas antes desta regra continuam liberadas.
 - Banco (aditivo): colunas `crmv`, `crmv_uf`, `access_status`, `access_note`, `access_reviewed_at` em `students`; tabela `student_proofs`.
 - Os termos de uso e a política padrão ganharam a cláusula "Quem pode usar". Se você já salvou textos próprios em Aparência/Termos, inclua essa cláusula neles.
+
+## Tutorial de instalação (`/instalar`)
+Página pública com o passo a passo para instalar o app no iPhone (Safari) e no Android (Chrome). Abre já na aba certa conforme o aparelho. Tem link na tela de entrada e na barra lateral do app (some quando o app já está instalado). Endereço para usar nos convites: `https://vetoncoway.onrender.com/instalar`.
