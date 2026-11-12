@@ -950,6 +950,13 @@ function chunkText(text) {
 function normalize(s) {
   return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
+// Radical simples (só plural): "linfomas" e "linfoma" passam a casar, "protocolos" e
+// "protocolo" também. Não é stemming de verdade — só o suficiente para o português, onde
+// o plural em -s é a variação que mais quebra a busca por substring.
+function radical(w) {
+  if (w.length > 4 && w.endsWith('s')) return w.slice(0, -1);
+  return w;
+}
 // ---------- Busca no acervo: constantes de relevância (patch 12/11/2026) ----------
 // Palavras que aparecem em qualquer pergunta e não identificam assunto. Sem esta lista,
 // "como" e "qual" contam como se fossem o tema e empatam documentos diferentes — foi o que
@@ -963,20 +970,20 @@ const STOPWORDS = new Set([
   'isso', 'esse', 'essa', 'este', 'vou', 'sem', 'nos', 'nas', 'aos'
 ]);
 
-// Abaixo deste score o trecho é ruído e não entra no contexto.
-// 5 = mais permissivo (mais contexto, mais ruído) | 8 = mais rígido (mais "não está no acervo").
-const META_LIMIAR = 6;
+// Limiar de ENTRADA do trecho, contando só as palavras da pergunta que aparecem no texto.
+// Antes era um único limiar de 6 aplicado ao score TOTAL — que incluía o bônus de metadado
+// (+4 por tag). Resultado: um documento com ficha catalográfica precisava de 2 palavras no
+// corpo, mas um documento SEM ficha precisava de 6. Era por isso que uma pergunta curta e
+// precisa ("protocolo chop") não achava nada: o trecho casava as 2 palavras e ficava fora.
+// Agora o limiar conta apenas casamento de TEXTO; o bônus de metadado continua no score.
+const LIMIAR_TEXTO = 2;   // com 2+ palavras na pergunta, exige casar 2 no texto
 
 // Quanto o assunto mais específico pode perder para ainda ser considerado. 0.75 = só entram
 // documentos cujo assunto casa com ao menos 75% do tamanho do melhor assunto encontrado.
 // É isto que impede o sarcoma esplênico de entrar numa pergunta de sarcoma de partes moles.
 const CORTE_ESPECIFICIDADE = 0.75;
 
-// Limiar para documento AINDA NÃO catalogado: sem ficha catalográfica não existe o bônus de
-// +4 por tag, então o score é só a contagem de palavras da pergunta (na prática 2 a 4). Exigir
-// o mesmo 6 acima faria o agente responder "não tenho" para tudo enquanto a catalogação não
-// estiver feita. 2 é o piso: pelo menos duas palavras da pergunta têm de aparecer no trecho.
-const META_LIMIAR_SEM_FICHA = 2;
+
 
 let _metaCache = null;
 let _metaCacheAt = 0;
@@ -1013,23 +1020,46 @@ async function retrieveContext(query, docs, topN = 5) {
   const metaMap = await loadMetadataMap();
 
   // ---- PASSO A: qual é o ASSUNTO da pergunta? ----
-  // Para cada documento, mede a tag mais específica do metadado que aparece na pergunta:
-  // "sarcoma de partes moles" (23 caracteres) vence "sarcoma esplenico" quando a pergunta
-  // fala de partes moles. Sem metadado, o documento fica com especificidade 0.
+  // Mede a tag mais específica que a pergunta contém, olhando TRÊS fontes:
+  //   1. as tags do metadado (tipo de neoplasia, tópicos, palavras-chave)
+  //   2. o NOME do arquivo (autor, ano, assunto — informação que antes era jogada fora)
+  //   3. o corpo do texto (último recurso, para acervo sem catalogação)
+  // A especificidade é o TAMANHO da tag, não o tamanho do nome do arquivo: assim
+  // "sarcoma de partes moles" (23) continua vencendo "sarcoma esplenico" (17), mas uma
+  // pergunta como "protocolo chop" deixa de cair no vazio só porque a ficha catalográfica
+  // não repetiu a palavra "chop" que está no título do PDF.
   const especificidade = {};
+  const TAGS_DO_NOME = /\b(chop|lopp|uw-?25|uw-?19|linfoma|linfomas|mastocitoma|melanoma|osteossarcoma|hemangiossarcoma|sarcoma|carcinoma|adenocarcinoma|mama|mamaria|mamario|tireoide|esplenico|timoma|insulinoma|feocromocitoma|linfoma)\b/gi;
   docs.forEach(d => {
     const meta = metaMap[d.id];
-    if (!meta) { especificidade[d.id] = 0; return; }
-    const tags = [
-      ...(meta.tipo_neoplasia || []),
-      ...(meta.topicos || []),
-      ...(meta.palavras_chave || [])
-    ].map(t => normalize(String(t))).filter(t => t.length > 3);
+    const tags = [];
+    if (meta) {
+      tags.push(...(meta.tipo_neoplasia || []), ...(meta.topicos || []), ...(meta.palavras_chave || []));
+    }
+    // tags extraídas do nome do arquivo (só termos de assunto, para não virar ruído)
+    const nomeNorm = normalize(d.name);
+    (normalize(d.name).match(new RegExp(TAGS_DO_NOME.source, 'g')) || []).forEach(t => tags.push(t));
 
     let melhorTag = 0;
-    tags.forEach(tag => {
-      if (qNorm.includes(tag)) melhorTag = Math.max(melhorTag, tag.length);
+    tags.forEach(t => {
+      const tag = normalize(String(t));
+      if (tag.length > 3 && (qNorm.includes(tag) || qNorm.includes(radical(tag)))) {
+        melhorTag = Math.max(melhorTag, tag.length);
+      }
     });
+
+    // 3) último recurso: se nada casou e o documento não tem ficha, olha o próprio texto.
+    //    Só conta termo FORTE (substantivo de assunto no início de um trecho), para não
+    //    transformar palavra comum em assunto.
+    if (melhorTag === 0 && !meta) {
+      const corpo = normalize(d.text.slice(0, 4000));
+      ['linfoma','mastocitoma','melanoma','osteossarcoma','hemangiossarcoma','sarcoma',
+       'carcinoma','adenocarcinoma','mama','mamaria','chop','lop','tireoide','timoma',
+       'insulinoma','feocromocitoma'].forEach(t => {
+        if (qNorm.includes(t) && corpo.includes(t)) melhorTag = Math.max(melhorTag, t.length);
+      });
+    }
+
     especificidade[d.id] = melhorTag;
   });
 
@@ -1039,7 +1069,7 @@ async function retrieveContext(query, docs, topN = 5) {
   //     esplênico de responder pergunta de sarcoma de partes moles);
   //   - documento AINDA NÃO catalogado continua disponível como retaguarda, senão um acervo
   //     recém-subido (doc_metadata vazia) faria o agente responder "não tenho" para TUDO.
-  //     A proteção contra ruído nesse caso é o META_LIMIAR abaixo.
+  //     A proteção contra ruído nesse caso é o LIMIAR_TEXTO abaixo.
   const melhorAssunto = Math.max(0, ...Object.values(especificidade));
   const catalogados = docs.filter(d => metaMap[d.id]);
   const naoCatalogados = docs.filter(d => !metaMap[d.id]);
@@ -1091,9 +1121,12 @@ async function retrieveContext(query, docs, topN = 5) {
     chunkText(d.text).forEach(c => {
       const cNorm = normalize(c);
       let score = metaBoost;
-      qWords.forEach(w => { if (cNorm.includes(w)) score++; });
-      const limiar = meta ? META_LIMIAR : META_LIMIAR_SEM_FICHA;
-      if (score >= limiar) {
+      let casaTexto = 0;   // palavras da pergunta presentes no TEXTO (sem contar metadado)
+      qWords.forEach(w => {
+        if (cNorm.includes(w) || cNorm.includes(radical(w))) { score++; casaTexto++; }
+      });
+      // Pergunta de uma palavra ("chop") não tem como casar 2 no texto: exige 1.
+      if (casaTexto >= Math.min(LIMIAR_TEXTO, qWords.length)) {
         scored.push({ source: d.name, docId: d.id, text: c, score });
       }
     });
