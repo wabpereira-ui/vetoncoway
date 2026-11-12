@@ -891,8 +891,61 @@ app.get('/', requireStudentPage, (req, res) => {
 });
 app.use(express.static(path.join(__dirname, 'public'), { index: false }));
 
+// Corte do acervo em trechos pesquisáveis.
+// ANTES (defeito encontrado em 12/11/2026): dividia só em linha em branco. Texto extraído
+// de PDF muitas vezes não tem linha em branco entre parágrafos — então um artigo inteiro
+// virava UM único trecho. Consequência: um artigo de 8.000 palavras entrava na busca como
+// um bloco só, com score baixo (2 a 4), e o parágrafo que realmente respondia (a dose, o
+// calendário) ficava invisível. Era por isso que o agente dizia "o acervo não cobre CHOP"
+// tendo 5 artigos de CHOP dentro dele.
+// AGORA: parágrafo primeiro; parágrafo grande é subdividido por frase; e cada trecho leva
+// um pedaço do anterior (sobreposição) para não cortar um dado no meio.
+const CHUNK_MAX = 1200;       // caracteres por trecho (~200 palavras)
+const CHUNK_OVERLAP = 200;    // repetição entre trechos vizinhos
+
 function chunkText(text) {
-  return text.split(/\n\s*\n/).map(p => p.trim()).filter(p => p.length > 20);
+  if (!text) return [];
+  const blocos = [];
+
+  const empurra = (s) => {
+    const t = String(s).trim();
+    if (t.length > 20) blocos.push(t);
+  };
+
+  // 1) separa por parágrafo, mas também por linha simples longa — PDFs costumam ter
+  //    quebra de linha a cada ~90 caracteres, e uma página inteira sem linha em branco.
+  const paragrafos = text.split(/\n\s*\n/).flatMap(p =>
+    p.split(/\n(?=[A-ZÀ-Ü0-9])/).length > 1 && p.length > CHUNK_MAX ? p.split(/\n/) : [p]
+  );
+
+  for (const p of paragrafos) {
+    const limpo = p.replace(/\s+/g, ' ').trim();
+    if (limpo.length <= CHUNK_MAX) { empurra(limpo); continue; }
+    // 2) parágrafo maior que o limite: divide por frase
+    const frases = limpo.match(/[^.!?]+[.!?]+\s*/g) || [limpo];
+    let atual = '';
+    for (let f of frases) {
+      while (f.length > CHUNK_MAX) {              // frase gigante: corte seco
+        const pedaco = f.slice(0, CHUNK_MAX);
+        if (atual) { empurra(atual); atual = ''; }
+        empurra(pedaco);
+        f = f.slice(CHUNK_MAX - CHUNK_OVERLAP);
+      }
+      if ((atual + f).length > CHUNK_MAX) { empurra(atual); atual = f; }
+      else atual += f;
+    }
+    empurra(atual);
+  }
+
+  // 3) sobreposição: cada trecho herda o fim do anterior, para um dado que caiu na
+  //    divisa ainda aparecer em algum trecho inteiro.
+  const comSobreposicao = [];
+  for (let i = 0; i < blocos.length; i++) {
+    if (i === 0) { comSobreposicao.push(blocos[i]); continue; }
+    const cauda = blocos[i - 1].slice(-CHUNK_OVERLAP);
+    comSobreposicao.push((cauda + ' ' + blocos[i]).trim());
+  }
+  return comSobreposicao;
 }
 function normalize(s) {
   return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
