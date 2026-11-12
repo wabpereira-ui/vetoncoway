@@ -1013,11 +1013,20 @@ async function loadMetadataMap() {
 }
 function invalidateMetaCache() { _metaCache = null; }
 
+// Documento de EXEMPLO/demonstração nunca deve responder aluno: é texto genérico semeado
+// na primeira subida do sistema (docs.json), com doses didáticas e o aviso interno
+// "NÃO usar como dose definitiva". Antes ele aparecia em toda pergunta de linfoma e ia
+// parar no rodapé como "Fonte consultada: Protocolo CHOP (exemplo)".
+const EH_EXEMPLO = /\b(exemplo|example|demonstra[cç][aã]o|placeholder|amostra)\b/i;
+
 async function retrieveContext(query, docs, topN = 5) {
   const qWords = normalize(query).split(/\W+/)
     .filter(w => w.length > 3 && !STOPWORDS.has(w));
   const qNorm = normalize(query);
   const metaMap = await loadMetadataMap();
+
+  // Filtro de segurança: material de exemplo/demonstração fica fora da busca.
+  const docsReais = docs.filter(d => !EH_EXEMPLO.test(d.name || ''));
 
   // ---- PASSO A: qual é o ASSUNTO da pergunta? ----
   // Mede a tag mais específica que a pergunta contém, olhando TRÊS fontes:
@@ -1029,8 +1038,8 @@ async function retrieveContext(query, docs, topN = 5) {
   // pergunta como "protocolo chop" deixa de cair no vazio só porque a ficha catalográfica
   // não repetiu a palavra "chop" que está no título do PDF.
   const especificidade = {};
-  const TAGS_DO_NOME = /\b(chop|lopp|uw-?25|uw-?19|linfoma|linfomas|mastocitoma|melanoma|osteossarcoma|hemangiossarcoma|sarcoma|carcinoma|adenocarcinoma|mama|mamaria|mamario|tireoide|esplenico|timoma|insulinoma|feocromocitoma|linfoma)\b/gi;
-  docs.forEach(d => {
+  const TAGS_DO_NOME = /\b(chop|lopp|uw-?25|uw-?19|linfoma|linfomas|mastocitoma|melanoma|osteossarcoma|hemangiossarcoma|sarcoma|carcinoma|adenocarcinoma|mama|mamaria|mamario|tireoide|esplenico|timoma|insulinoma|feocromocitoma)\b/gi;
+  docsReais.forEach(d => {
     const meta = metaMap[d.id];
     const tags = [];
     if (meta) {
@@ -1071,8 +1080,8 @@ async function retrieveContext(query, docs, topN = 5) {
   //     recém-subido (doc_metadata vazia) faria o agente responder "não tenho" para TUDO.
   //     A proteção contra ruído nesse caso é o LIMIAR_TEXTO abaixo.
   const melhorAssunto = Math.max(0, ...Object.values(especificidade));
-  const catalogados = docs.filter(d => metaMap[d.id]);
-  const naoCatalogados = docs.filter(d => !metaMap[d.id]);
+  const catalogados = docsReais.filter(d => metaMap[d.id]);
+  const naoCatalogados = docsReais.filter(d => !metaMap[d.id]);
 
   if (melhorAssunto === 0 && naoCatalogados.length === 0) {
     // Acervo inteiro catalogado e nenhum documento fala do assunto perguntado:
@@ -1083,7 +1092,7 @@ async function retrieveContext(query, docs, topN = 5) {
   const corte = melhorAssunto * CORTE_ESPECIFICIDADE;
   let permitidos = melhorAssunto === 0
     ? naoCatalogados.slice()                                                  // retaguarda
-    : docs.filter(d => especificidade[d.id] >= corte || !metaMap[d.id]);       // assunto + retaguarda
+    : docsReais.filter(d => especificidade[d.id] >= corte || !metaMap[d.id]);  // assunto + retaguarda
 
   // Filtro de espécie: só age quando a catalogação informou a espécie do documento E a
   // pergunta nomeia a espécie do paciente. Sem essa informação, não filtra (não piora nada).
