@@ -1880,7 +1880,20 @@ const REGRA_SEM_COBERTURA = `0b) COBERTURA DO ACERVO — o que fazer quando o ma
    - PROIBIDO: inventar autor, ano, revista ou DOI. Se não sabe a referência, diga que não sabe.
    - Quando a resposta for um esquema vindo de fora do acervo, sinalize no começo da resposta e
      oriente a levar a versão definitiva para a mentoria.
-   A regra de ouro: transparência sobre a origem vale mais que completude.`;
+   A regra de ouro: transparência sobre a origem vale mais que completude.
+
+   REGRA DURA — CALENDÁRIO E TABELA DE PROTOCOLO:
+   NUNCA reproduza tabela, calendário semana-a-semana ou sequência de administração de um
+   protocolo que não esteja no acervo. NÃO monte a tabela de memória, mesmo que você "tenha
+   certeza". Protocolos têm variantes (12, 15, 16, 19, 25 semanas; com ou sem manutenção; com
+   ou sem L-asparaginase) e uma tabela errada copiada para a execução causa dano real ao
+   paciente — dose no dia errado, droga trocada, descanso omitido.
+   Em vez da tabela, faça isto:
+   a) diga o que o acervo cobre e o que ele não cobre;
+   b) diga quantas variantes existem e qual é a diferença entre elas em LINHAS GERAIS;
+   c) cite a fonte primária com referência completa e DOI para ela consultar;
+   d) oriente levar o esquema para a mentoria, onde está a versão que a mentora usa.
+   Se o calendário ESTIVER no acervo, aí sim reproduza — citando a fonte do acervo.`;
 
 const REGRA_CITACAO = `0c) Ao citar qualquer fonte, use a REFERÊNCIA COMPLETA do metadado (autor, ano, revista,
 DOI), nunca o nome do arquivo PDF. Se o metadado não tiver a referência, diga "referência não
