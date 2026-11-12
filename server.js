@@ -1835,10 +1835,19 @@ Se o aluno não informou, diga o que falta e pergunte. Não complete com suposi�
 prontuário com dado inventado é o erro mais grave que você pode cometer: ele pode ser copiado
 para o documento do paciente.`;
 
-const REGRA_SEM_COBERTURA = `0b) Se o CONTEXTO do acervo vier vazio ou claramente insuficiente para uma pergunta de
-DOSE ou PROTOCOLO, NÃO responda com conhecimento geral. Diga exatamente que esse ponto ainda
-não está no material da mentora e ofereça levar a dúvida para a mentoria. Dose inventada ou de
-memória do modelo, sem fonte do acervo, é proibida — mesmo que você "saiba" a resposta.`;
+const REGRA_SEM_COBERTURA = `0b) COBERTURA DO ACERVO — o que fazer quando o material não tem a resposta.
+   É normal o acervo ter a EVIDÊNCIA (estudos mostrando que um protocolo funciona) sem ter o
+   DETALHE OPERACIONAL (o esquema dia a dia, a dose exata). São coisas diferentes:
+   - Se o acervo cobre o assunto mas não o detalhe operacional: responda o que o acervo traz,
+     e ofereça o detalhe como COMPLEMENTO EXTERNO, marcado assim, deixando claro que não é
+     material da mentora.
+   - Se algo é complemento externo, ele PRECISA de fonte verificável com referência completa
+     (autor, ano, revista, DOI). Sem referência, não afirme — diga que não tem.
+   - PROIBIDO: número de dose apresentado como se viesse do acervo quando não veio.
+   - PROIBIDO: inventar autor, ano, revista ou DOI. Se não sabe a referência, diga que não sabe.
+   - Quando a resposta for um esquema vindo de fora do acervo, sinalize no começo da resposta e
+     oriente a levar a versão definitiva para a mentoria.
+   A regra de ouro: transparência sobre a origem vale mais que completude.`;
 
 const REGRA_CITACAO = `0c) Ao citar qualquer fonte, use a REFERÊNCIA COMPLETA do metadado (autor, ano, revista,
 DOI), nunca o nome do arquivo PDF. Se o metadado não tiver a referência, diga "referência não
@@ -1854,9 +1863,10 @@ function buildSystemPrompt(cfg) {
     acervo: `2) Responda SOMENTE com base no CONTEXTO do acervo (o material de ${mentor}). Você NÃO tem busca na internet. ` +
       `Se o contexto não cobrir a pergunta, não invente: diga com clareza que esse ponto ainda não está no material de ${mentor}, ` +
       `ofereça no máximo uma orientação geral breve e prudente, marcada como "orientação geral, fora do material", e sugira levar o caso à mentoria.`,
-    acervo_web: `2) Priorize o CONTEXTO do acervo (o material de ${mentor}). Só se ele for claramente insuficiente, complemente com ` +
-      `conhecimento geral e, se for realmente necessário (dado atual ou muito específico), com NO MÁXIMO uma ou duas buscas na internet. ` +
-      `Deixe explícito qual parte vem do material de ${mentor} e qual é complemento externo.`,
+    acervo_web: `2) Priorize o CONTEXTO do acervo (o material de ${mentor}). Se ele cobrir o assunto, use-o. Se cobrir o ` +
+      `assunto mas não o detalhe operacional que o aluno pediu (esquema, dose exata, calendário), você PODE trazer o detalhe ` +
+      `como COMPLEMENTO EXTERNO conforme a regra 0b — sempre deixando explícito qual parte vem do material de ${mentor} e ` +
+      `qual é complemento, e sempre com referência verificável. Se não houver fonte confiável, diga que não tem.`,
     aberto: `2) Se o CONTEXTO do acervo for insuficiente, responda com conhecimento geral de medicina veterinária e, se precisar de algo ` +
       `atual ou específico, use a busca na internet — deixando claro que essa parte não vem do material oficial do curso.`
   }[cfg.searchMode];
