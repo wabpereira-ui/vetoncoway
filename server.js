@@ -919,6 +919,12 @@ const META_LIMIAR = 6;
 // É isto que impede o sarcoma esplênico de entrar numa pergunta de sarcoma de partes moles.
 const CORTE_ESPECIFICIDADE = 0.75;
 
+// Limiar para documento AINDA NÃO catalogado: sem ficha catalográfica não existe o bônus de
+// +4 por tag, então o score é só a contagem de palavras da pergunta (na prática 2 a 4). Exigir
+// o mesmo 6 acima faria o agente responder "não tenho" para tudo enquanto a catalogação não
+// estiver feita. 2 é o piso: pelo menos duas palavras da pergunta têm de aparecer no trecho.
+const META_LIMIAR_SEM_FICHA = 2;
+
 let _metaCache = null;
 let _metaCacheAt = 0;
 const META_CACHE_TTL_MS = 10 * 60 * 1000;
@@ -974,15 +980,27 @@ async function retrieveContext(query, docs, topN = 5) {
     especificidade[d.id] = melhorTag;
   });
 
-  // ---- PASSO B: nenhum assunto reconhecido -> o acervo não cobre a pergunta ----
-  // Devolver vazio é proposital: o prompt responde "esse ponto não está no material da
-  // mentora" em vez de completar com conhecimento geral (ver regras 0b no prompt).
+  // ---- PASSO B: decidir quais documentos podem responder ----
+  // Regra de convivência entre acervo catalogado e não catalogado (importante):
+  //   - documento CATALOGADO só entra se o assunto casar (é o filtro que impede o sarcoma
+  //     esplênico de responder pergunta de sarcoma de partes moles);
+  //   - documento AINDA NÃO catalogado continua disponível como retaguarda, senão um acervo
+  //     recém-subido (doc_metadata vazia) faria o agente responder "não tenho" para TUDO.
+  //     A proteção contra ruído nesse caso é o META_LIMIAR abaixo.
   const melhorAssunto = Math.max(0, ...Object.values(especificidade));
-  if (melhorAssunto === 0) return [];
+  const catalogados = docs.filter(d => metaMap[d.id]);
+  const naoCatalogados = docs.filter(d => !metaMap[d.id]);
 
-  // ---- PASSO C: só os documentos do assunto vencedor entram na busca por palavras ----
+  if (melhorAssunto === 0 && naoCatalogados.length === 0) {
+    // Acervo inteiro catalogado e nenhum documento fala do assunto perguntado:
+    // é o caso honesto de "não está no acervo" (ver regra 0b no prompt).
+    return [];
+  }
+
   const corte = melhorAssunto * CORTE_ESPECIFICIDADE;
-  let permitidos = docs.filter(d => especificidade[d.id] >= corte);
+  let permitidos = melhorAssunto === 0
+    ? naoCatalogados.slice()                                                  // retaguarda
+    : docs.filter(d => especificidade[d.id] >= corte || !metaMap[d.id]);       // assunto + retaguarda
 
   // Filtro de espécie: só age quando a catalogação informou a espécie do documento E a
   // pergunta nomeia a espécie do paciente. Sem essa informação, não filtra (não piora nada).
@@ -1021,13 +1039,21 @@ async function retrieveContext(query, docs, topN = 5) {
       const cNorm = normalize(c);
       let score = metaBoost;
       qWords.forEach(w => { if (cNorm.includes(w)) score++; });
-      if (score >= META_LIMIAR) {
+      const limiar = meta ? META_LIMIAR : META_LIMIAR_SEM_FICHA;
+      if (score >= limiar) {
         scored.push({ source: d.name, docId: d.id, text: c, score });
       }
     });
   });
 
-  scored.sort((a, b) => b.score - a.score);
+  // Desempate: em igualdade de score, o documento CATALOGADO vem antes. Assim, à medida que
+  // a catalogação avança, o acervo fica progressivamente melhor sem precisar de um "tudo ou nada".
+  scored.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    const aCat = metaMap[a.docId] ? 1 : 0;
+    const bCat = metaMap[b.docId] ? 1 : 0;
+    return bCat - aCat;
+  });
   return scored.slice(0, topN);
 }
 
