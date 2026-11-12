@@ -897,6 +897,28 @@ function chunkText(text) {
 function normalize(s) {
   return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
+// ---------- Busca no acervo: constantes de relevância (patch 12/11/2026) ----------
+// Palavras que aparecem em qualquer pergunta e não identificam assunto. Sem esta lista,
+// "como" e "qual" contam como se fossem o tema e empatam documentos diferentes — foi o que
+// trouxe "Disgerminoma em cadela" numa pergunta sobre neoplasia mamária ("como" casa dentro
+// de "com-p-o-r-t-a-m-e-n-t-o").
+const STOPWORDS = new Set([
+  'qual', 'quais', 'como', 'quando', 'onde', 'para', 'uma', 'que', 'com',
+  'dos', 'das', 'por', 'seu', 'sua', 'mais', 'menos', 'sobre', 'pode',
+  'deve', 'seria', 'tem', 'ter', 'foi', 'sao', 'esta', 'ainda', 'entao',
+  'tambem', 'fazer', 'usar', 'devo', 'posso', 'estou', 'aqui',
+  'isso', 'esse', 'essa', 'este', 'vou', 'sem', 'nos', 'nas', 'aos'
+]);
+
+// Abaixo deste score o trecho é ruído e não entra no contexto.
+// 5 = mais permissivo (mais contexto, mais ruído) | 8 = mais rígido (mais "não está no acervo").
+const META_LIMIAR = 6;
+
+// Quanto o assunto mais específico pode perder para ainda ser considerado. 0.75 = só entram
+// documentos cujo assunto casa com ao menos 75% do tamanho do melhor assunto encontrado.
+// É isto que impede o sarcoma esplênico de entrar numa pergunta de sarcoma de partes moles.
+const CORTE_ESPECIFICIDADE = 0.75;
+
 let _metaCache = null;
 let _metaCacheAt = 0;
 const META_CACHE_TTL_MS = 10 * 60 * 1000;
@@ -912,7 +934,11 @@ async function loadMetadataMap() {
       topicos: r.topicos || [],
       palavras_chave: r.palavras_chave || [],
       resumo: r.resumo || '',
-      tipo_documento: r.tipo_documento || ''
+      tipo_documento: r.tipo_documento || '',
+      // Campos de filtro fino (patch 12/11/2026). Ficam vazios enquanto a catalogação não
+      // preenchê-los — e, vazios, NÃO filtram nada (ver PASSO C em retrieveContext).
+      especie: r.especie || '',
+      local_anatomico: r.local_anatomico || ''
     };
   });
   _metaCache = map;
@@ -922,29 +948,85 @@ async function loadMetadataMap() {
 function invalidateMetaCache() { _metaCache = null; }
 
 async function retrieveContext(query, docs, topN = 5) {
-  const qWords = normalize(query).split(/\W+/).filter(w => w.length > 3);
+  const qWords = normalize(query).split(/\W+/)
+    .filter(w => w.length > 3 && !STOPWORDS.has(w));
+  const qNorm = normalize(query);
   const metaMap = await loadMetadataMap();
-  let scored = [];
+
+  // ---- PASSO A: qual é o ASSUNTO da pergunta? ----
+  // Para cada documento, mede a tag mais específica do metadado que aparece na pergunta:
+  // "sarcoma de partes moles" (23 caracteres) vence "sarcoma esplenico" quando a pergunta
+  // fala de partes moles. Sem metadado, o documento fica com especificidade 0.
+  const especificidade = {};
   docs.forEach(d => {
-    // Ficha catalográfica (Triagem Oncoway): se existir, dá um "bônus" de relevância quando
-    // a pergunta bate com o tipo de neoplasia, tópicos ou palavras-chave catalogadas —
-    // isso ajuda a achar o artigo certo mesmo quando o aluno usa palavras diferentes do texto.
     const meta = metaMap[d.id];
+    if (!meta) { especificidade[d.id] = 0; return; }
+    const tags = [
+      ...(meta.tipo_neoplasia || []),
+      ...(meta.topicos || []),
+      ...(meta.palavras_chave || [])
+    ].map(t => normalize(String(t))).filter(t => t.length > 3);
+
+    let melhorTag = 0;
+    tags.forEach(tag => {
+      if (qNorm.includes(tag)) melhorTag = Math.max(melhorTag, tag.length);
+    });
+    especificidade[d.id] = melhorTag;
+  });
+
+  // ---- PASSO B: nenhum assunto reconhecido -> o acervo não cobre a pergunta ----
+  // Devolver vazio é proposital: o prompt responde "esse ponto não está no material da
+  // mentora" em vez de completar com conhecimento geral (ver regras 0b no prompt).
+  const melhorAssunto = Math.max(0, ...Object.values(especificidade));
+  if (melhorAssunto === 0) return [];
+
+  // ---- PASSO C: só os documentos do assunto vencedor entram na busca por palavras ----
+  const corte = melhorAssunto * CORTE_ESPECIFICIDADE;
+  let permitidos = docs.filter(d => especificidade[d.id] >= corte);
+
+  // Filtro de espécie: só age quando a catalogação informou a espécie do documento E a
+  // pergunta nomeia a espécie do paciente. Sem essa informação, não filtra (não piora nada).
+  const qEspecie = /\b(gato|gatos|felino|felinos|gatinho)\b/.test(qNorm) ? 'gato'
+    : /\b(cao|caes|cachorro|cachorros|canino|caninos)\b/.test(qNorm) ? 'cao'
+    : null;
+  if (qEspecie) {
+    const compativeis = permitidos.filter(d => {
+      const esp = normalize(String((metaMap[d.id] && metaMap[d.id].especie) || ''));
+      if (!esp || esp === 'ambos' || esp === 'todas') return true;  // sem dado: não filtra
+      return esp.includes(qEspecie);
+    });
+    // Se havia documento do assunto mas todos são de outra espécie, a resposta correta é
+    // "não tenho para esta espécie" — cair de volta no documento de outra espécie seria
+    // exatamente o erro que este filtro existe para impedir (ex.: dose felina respondida
+    // com protocolo canino).
+    permitidos = compativeis;
+  }
+  if (!permitidos.length) return [];
+
+  // ---- PASSO D: busca por palavras, apenas dentro dos documentos permitidos ----
+  const scored = [];
+  permitidos.forEach(d => {
+    const meta = metaMap[d.id];
+    const tags = meta
+      ? [...(meta.tipo_neoplasia || []), ...(meta.topicos || []), ...(meta.palavras_chave || [])]
+          .map(t => normalize(String(t)))
+      : [];
+
     let metaBoost = 0;
-    if (meta) {
-      const tags = [...(meta.tipo_neoplasia || []), ...(meta.topicos || []), ...(meta.palavras_chave || [])]
-        .map(t => normalize(String(t)));
-      qWords.forEach(w => {
-        if (tags.some(tag => tag.includes(w) || w.includes(tag))) metaBoost += 4;
-      });
-    }
+    qWords.forEach(w => {
+      if (tags.some(tag => tag.includes(w) || w.includes(tag))) metaBoost += 4;
+    });
+
     chunkText(d.text).forEach(c => {
       const cNorm = normalize(c);
       let score = metaBoost;
       qWords.forEach(w => { if (cNorm.includes(w)) score++; });
-      if (score > 0) scored.push({ source: d.name, docId: d.id, text: c, score });
+      if (score >= META_LIMIAR) {
+        scored.push({ source: d.name, docId: d.id, text: c, score });
+      }
     });
   });
+
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, topN);
 }
@@ -1655,6 +1737,34 @@ const ESTILO_RESPOSTA = `Antes de responder, identifique o tipo da pergunta:
 - Se for uma PERGUNTA DE DECISÃO CLÍNICA (indicação de tratamento, prognóstico, conduta — ex: "esse caso precisa de quimioterapia?", "qual o prognóstico?", "vale a pena operar?"): responda no ESTILO MENTOR. Apresente brevemente os fatores relevantes que pesam nessa decisão (ex: grau histológico, margens, estadiamento, conforme o assunto) e faça 2-4 perguntas de acompanhamento para o aluno aplicar isso ao caso dele, antes de fechar uma orientação geral. O objetivo é ajudar o aluno a EXERCITAR o raciocínio clínico, não só entregar a resposta pronta.
 - Se for uma PERGUNTA OBJETIVA (dose, definição, valor de referência, dado factual direto — ex: "qual a dose de vincristina?", "o que é o índice mitótico?"): responda de forma direta e concisa, sem fazer perguntas de volta desnecessárias.`;
 
+// ---------- Regras de segurança clínica no prompt (patch 12/11/2026) ----------
+// Nasceram do teste comparativo contra o ChatGPT (12/11/2026), em que o agente perdeu 26x33
+// e falhou justamente nos dois critérios que eram a aposta do produto (fonte e prontuário).
+// A REGRA_ANTI_PRESUNCAO é a mais importante: sem ela o agente presumiu "margem comprometida"
+// que a mentora nunca informou e escreveu isso dentro do texto do prontuário.
+const REGRA_ANTI_PRESUNCAO = `0) NUNCA presuma dado clínico do caso. Antes de responder ou de redigir qualquer
+texto de prontuário, verifique se você tem TODOS os dados que mudam a conduta. Se faltar
+qualquer um destes, PARE e pergunte — não redija o documento ainda:
+   - diagnóstico histopatológico ou citológico (tipo e grau)
+   - margens cirúrgicas (livres, comprometidas, infiltração focal ou difusa)
+   - estadiamento (linfonodo, imagem de tórax, abdome quando indicado)
+   - peso e espécie do paciente
+   - função renal (creatinina, TFG quando aplicável) e hepática
+   - se houve ou não radioterapia, cirurgia prévia ou tratamento anterior
+   - objetivo do tratamento (curativo, controle, paliativo)
+Se o aluno não informou, diga o que falta e pergunte. Não complete com suposição. Um texto de
+prontuário com dado inventado é o erro mais grave que você pode cometer: ele pode ser copiado
+para o documento do paciente.`;
+
+const REGRA_SEM_COBERTURA = `0b) Se o CONTEXTO do acervo vier vazio ou claramente insuficiente para uma pergunta de
+DOSE ou PROTOCOLO, NÃO responda com conhecimento geral. Diga exatamente que esse ponto ainda
+não está no material da mentora e ofereça levar a dúvida para a mentoria. Dose inventada ou de
+memória do modelo, sem fonte do acervo, é proibida — mesmo que você "saiba" a resposta.`;
+
+const REGRA_CITACAO = `0c) Ao citar qualquer fonte, use a REFERÊNCIA COMPLETA do metadado (autor, ano, revista,
+DOI), nunca o nome do arquivo PDF. Se o metadado não tiver a referência, diga "referência não
+catalogada" em vez de citar um nome de arquivo ou inventar um autor.`;
+
 // Prompt único (substituiu os três prompts separados de antes). Une acervo + conhecimento
 // geral + interpretação de exame + memória de conversa numa só chamada à IA — mais rápido,
 // mais barato, e funciona naturalmente com perguntas de acompanhamento ("e sobre isso que
@@ -1684,6 +1794,10 @@ ${cfg.voice}
 Evite o tom de assistente genérico: nada de "Claro!", "Ótima pergunta!", listas de tópicos soltos sem raciocínio ou avisos repetitivos.
 
 Cada pergunta pode vir com CONTEXTO do acervo oficial, e/ou imagens e textos de exames anexados.
+
+${REGRA_ANTI_PRESUNCAO}
+${REGRA_SEM_COBERTURA}
+${REGRA_CITACAO}
 
 Regras obrigatórias:
 1) Se o CONTEXTO do acervo for suficiente, baseie-se nele e cite a fonte entre parênteses, ex: (Fonte: Aula 3 — Linfoma).
