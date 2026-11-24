@@ -308,9 +308,71 @@ async function embedTexts(textos, tipo = 'document') {
 }
 
 // Indexa UM material: fatia o texto e grava os vetores. Devolve quantos trechos gravou.
+// ---------- Limpeza da bibliografia antes de indexar ----------
+// Um artigo tem duas partes de peso muito diferente: o corpo (conduta, dose, prognóstico) e a
+// bibliografia (autor, revista, ano). A bibliografia cita o assunto do artigo em cada linha,
+// então ela CASA com qualquer pergunta sobre o tema — e, por não ter conteúdo clínico, vira
+// ruído que ocupa as primeiras posições. Medido num artigo real: 45 de 54 trechos eram
+// referências. Aqui ela é retirada do que vai para o índice.
+// O texto original NÃO é alterado: a catalogação continua lendo o artigo inteiro justamente
+// para extrair autores, ano, revista e DOI — que é de onde a citação deve sair.
+const CABECALHO_REFS = /^[ \t]*(refer[eê]ncias( bibliogr[aá]ficas)?|bibliografia|literatura citada|references|bibliography|works cited|leitura recomendada)[ \t]*[:.]?[ \t]*$/im;
+
+// Uma linha é "referência" quando parece citação: autor + (ano + revista, ou DOI, ou numeração).
+// Conservador de propósito: na dúvida, MANTÉM — perder conteúdo clínico é pior que manter ruído.
+function linhaPareceReferencia(linha) {
+  const t = linha.trim();
+  if (t.length < 25) return false;
+  const temAno = /\b(19|20)\d{2}\b/.test(t);
+  const temDoi = /\bdoi\b|\b10\.\d{4,9}\//i.test(t);
+  const temRevista = /\b(J\s?Vet|Vet\s?Comp|Vet\s?Clin|J\s?Am\s?Vet|J\s?Small|Res\s?Vet|Am\s?J\s?Vet|Pesq|Arq\s?Bras|Ci[eê]ncia\s?Rural|Front\s?Vet|BMC|PLoS|Sci\s?Rep)\b/i.test(t);
+  const numerada = /^\s*(\[?\d{1,3}[\].)]|\d{1,3}\s*[-–])\s/.test(t);
+  const temPagina = /\b\d{1,4}\s*[:(]\s*\d|\b\d+\s*[-–]\s*\d+\s*[.;]?\s*$/i.test(t);
+  const autorInicial = /^\s*(\[?\d{1,3}[\].)]\s*)?[A-ZÀ-Ü][A-Za-zÀ-ü'\-]+(\s+[A-ZÀ-Ü][A-Za-zÀ-ü'\-]+)?(,|\s)(\s*[A-Z]{1,3}\b|[A-Z]\.)/.test(t);
+  if (temDoi) return true;
+  if (numerada && (temAno || temRevista)) return true;
+  if (autorInicial && temAno && (temRevista || temPagina)) return true;
+  return false;
+}
+
+function separarBibliografia(texto) {
+  if (!texto) return { corpo: '', refs: '' };
+  const bruto = String(texto);
+  // 1) Se existe um cabeçalho de referências na METADE FINAL do documento, corta ali.
+  //    (Na metade final de propósito: "Referências" citado no meio do texto não deve cortar.)
+  //    O critério de aceitação NÃO é a posição do cabeçalho (num artigo real a bibliografia pode
+  //    ser 80% do texto e começar cedo): é o CONTEÚDO depois dele se parecer com bibliografia.
+  const re = new RegExp(CABECALHO_REFS.source, 'gim');
+  let m;
+  while ((m = re.exec(bruto)) !== null) {
+    const corpo = bruto.slice(0, m.index);
+    const refs = bruto.slice(m.index);
+    if (refs.length < bruto.length * 0.08) continue;          // cauda curta demais: não é bibliografia
+    const linhas = refs.split(/\n+/).filter(l => l.trim());
+    if (linhas.length < 3) continue;
+    const parecidas = linhas.filter(l => linhaPareceReferencia(l)).length;
+    if (parecidas / linhas.length >= 0.5) return { corpo, refs };
+  }
+  let corte = -1;
+  // 2) Sem cabeçalho confiável: remove as linhas soltas que claramente são citação,
+  //    mantendo o resto (um artigo pode ter referência no rodapé de cada página).
+  const linhas = bruto.split(/\n/);
+  const mantidas = [];
+  const descartadas = [];
+  for (const l of linhas) {
+    if (linhaPareceReferencia(l) && l.trim().length < 400) descartadas.push(l);
+    else mantidas.push(l);
+  }
+  // Proteção: se o filtro fosse levar mais de metade do texto, ele está errado — mantém tudo.
+  if (descartadas.join('').length > bruto.length * 0.5) return { corpo: bruto, refs: '' };
+  return { corpo: mantidas.join('\n'), refs: descartadas.join('\n') };
+}
+
 async function indexDocument(doc) {
   if (!useDb || !pgvectorReady || !embeddingConfigured()) return 0;
-  const trechos = chunkText(doc.text);
+  const { corpo, refs } = separarBibliografia(doc.text);
+  if (refs) console.log('Indexação: ' + doc.name + ' — bibliografia separada (' + refs.length + ' caracteres fora do índice).');
+  const trechos = chunkText(corpo.length > 200 ? corpo : doc.text);
   if (!trechos.length) return 0;
   const vetores = await embedTexts(trechos, 'document');
   await pool.query('DELETE FROM doc_chunks WHERE doc_id=$1', [doc.id]);
@@ -2377,6 +2439,15 @@ app.get('/api/admin/index-status', requireAdmin, async (req, res) => {
 // Indexa um lote de materiais ainda sem vetor. O botão do painel chama em repetição até zerar.
 // Lote pequeno de propósito: no plano grátis do Render a requisição precisa terminar rápido,
 // e um material grande pode levar alguns segundos.
+// Reindexa TUDO do zero: apaga os vetores e devolve todos os materiais à fila.
+// Necessário uma vez depois da correção da bibliografia, porque o índice antigo foi gravado
+// com a lista de referências misturada ao conteúdo clínico.
+app.post('/api/admin/index-reset', requireAdmin, async (req, res) => {
+  if (!useDb || !pgvectorReady) return res.status(400).json({ error: 'pgvector não está ativo.' });
+  await pool.query('DELETE FROM doc_chunks');
+  res.json({ ok: true, ...(await getIndexStatus()) });
+});
+
 app.post('/api/admin/index-batch', requireAdmin, async (req, res) => {
   if (!useDb) return res.status(400).json({ error: 'A indexação exige banco de dados configurado (DATABASE_URL).' });
   if (!pgvectorReady) return res.status(400).json({ error: 'A extensão pgvector não está ativa. Ative "vector" no Supabase (Database > Extensions) e reinicie o serviço.' });
