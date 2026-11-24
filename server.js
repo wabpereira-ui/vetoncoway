@@ -112,6 +112,47 @@ async function initDb() {
       catalogued_at TIMESTAMPTZ DEFAULT now()
     );
   `);
+  // ---- Busca semântica (pgvector) ----
+  // A busca por palavra exigia que a aluna escrevesse o termo que está no artigo: "cachorro"
+  // não achava "dogs", "tratar" não achava "treatment". Os trechos agora são guardados como
+  // vetores (embeddings) e a busca passa a ser por SENTIDO. O acervo é fatiado uma única vez,
+  // na indexação — não a cada pergunta.
+  try { await pool.query('CREATE EXTENSION IF NOT EXISTS vector;'); }
+  catch (e) { /* sem permissão aqui: a extensão pode já estar ligada pelo painel do Supabase */ }
+  try {
+    const tipo = await pool.query("SELECT 1 FROM pg_type WHERE typname = 'vector' LIMIT 1");
+    pgvectorReady = tipo.rowCount > 0;
+  } catch (e) { pgvectorReady = false; }
+  if (pgvectorReady) {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS doc_chunks (
+        id TEXT PRIMARY KEY,
+        doc_id TEXT REFERENCES docs(id) ON DELETE CASCADE,
+        ord INT,
+        text TEXT NOT NULL,
+        embedding vector(${EMBEDDING_DIM}),
+        modelo TEXT,
+        created_at TIMESTAMPTZ DEFAULT now()
+      );
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS doc_chunks_doc ON doc_chunks (doc_id);`);
+    try {
+      await pool.query(`CREATE INDEX IF NOT EXISTS doc_chunks_hnsw ON doc_chunks USING hnsw (embedding vector_cosine_ops);`);
+    } catch (e) { console.warn('Busca semântica: índice HNSW não criado (' + e.message + ') — a busca funciona, só mais lenta.'); }
+    console.log('Busca semântica: ativa (pgvector, ' + EMBEDDING_DIM + ' dimensões, modelo ' + EMBEDDING_MODEL + ').');
+  } else {
+    console.warn('Busca semântica: INATIVA — extensão pgvector ausente. Ative "vector" no Supabase (Database > Extensions) e reinicie.');
+  }
+  // Colunas de ficha que o código JÁ lia mas que nunca foram criadas: sem elas o filtro de
+  // espécie nunca filtrava, e uma dose felina podia ser respondida com protocolo canino.
+  await pool.query(`ALTER TABLE doc_metadata ADD COLUMN IF NOT EXISTS especie TEXT;`);
+  await pool.query(`ALTER TABLE doc_metadata ADD COLUMN IF NOT EXISTS local_anatomico TEXT;`);
+  await pool.query(`ALTER TABLE doc_metadata ADD COLUMN IF NOT EXISTS referencia_completa TEXT;`);
+  await pool.query(`ALTER TABLE doc_metadata ADD COLUMN IF NOT EXISTS autores TEXT;`);
+  await pool.query(`ALTER TABLE doc_metadata ADD COLUMN IF NOT EXISTS ano TEXT;`);
+  await pool.query(`ALTER TABLE doc_metadata ADD COLUMN IF NOT EXISTS revista TEXT;`);
+  await pool.query(`ALTER TABLE doc_metadata ADD COLUMN IF NOT EXISTS doi TEXT;`);
+
   // Triagem Oncoway: doses/protocolos extraídos dos artigos, isolados numa tabela própria
   // para a mentora revisar (e para permitir, no futuro, detectar divergências entre fontes).
   await pool.query(`
@@ -205,6 +246,117 @@ async function initDb() {
 // Cache em memória: evita buscar o texto completo de TODOS os artigos no banco a cada
 // pergunta de aluno (isso estava consumindo o egress do Supabase rapidamente). O cache só
 // é renovado quando um material é adicionado/removido, ou a cada 10 minutos por segurança.
+// ---------- Busca semântica: configuração ----------
+// O provedor de embeddings é separado do provedor que escreve a resposta. A Anthropic não
+// tem modelo de embeddings; a geração continua nela. Trocar de provedor aqui não muda o
+// código da busca — só estas variáveis de ambiente.
+const EMBEDDING_PROVIDER = (process.env.EMBEDDING_PROVIDER || 'openai').toLowerCase();
+const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL
+  || (EMBEDDING_PROVIDER === 'voyage' ? 'voyage-4' : 'text-embedding-3-small');
+const EMBEDDING_DIM = parseInt(process.env.EMBEDDING_DIM || (EMBEDDING_PROVIDER === 'voyage' ? '1024' : '1536'), 10);
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+const VOYAGE_API_KEY = process.env.VOYAGE_API_KEY || '';
+const EMBED_BATCH = 64;
+
+// null = ainda não conferido; true/false = extensão pgvector presente ou não.
+let pgvectorReady = null;
+
+function embeddingConfigured() {
+  return EMBEDDING_PROVIDER === 'voyage' ? Boolean(VOYAGE_API_KEY) : Boolean(OPENAI_API_KEY);
+}
+
+// Gera os vetores de uma lista de textos. Devolve na MESMA ordem da entrada.
+// Repete com espera crescente quando o provedor limita a taxa (429) — o tier sem cartão do
+// Voyage permite só 3 requisições por minuto e falharia na primeira tentativa.
+async function embedTexts(textos, tipo = 'document') {
+  if (!textos.length || !embeddingConfigured()) return [];
+  const saida = [];
+  for (let i = 0; i < textos.length; i += EMBED_BATCH) {
+    const lote = textos.slice(i, i + EMBED_BATCH).map(t => String(t || '').slice(0, 8000));
+    let tentativa = 0;
+    for (;;) {
+      try {
+        let resp, dados;
+        if (EMBEDDING_PROVIDER === 'voyage') {
+          resp = await fetch(process.env.VOYAGE_API_URL || 'https://api.voyageai.com/v1/embeddings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + VOYAGE_API_KEY },
+            body: JSON.stringify({ input: lote, model: EMBEDDING_MODEL, input_type: tipo === 'query' ? 'query' : 'document' })
+          });
+        } else {
+          resp = await fetch(process.env.OPENAI_API_URL || 'https://api.openai.com/v1/embeddings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + OPENAI_API_KEY },
+            body: JSON.stringify({ model: EMBEDDING_MODEL, input: lote, dimensions: EMBEDDING_DIM })
+          });
+        }
+        dados = await resp.json();
+        if (!resp.ok) throw new Error((dados && dados.error && dados.error.message) || ('HTTP ' + resp.status));
+        const vetores = (dados.data || []).slice().sort((a, b) => a.index - b.index).map(x => x.embedding);
+        if (vetores.length !== lote.length) throw new Error('o provedor devolveu ' + vetores.length + ' vetores para ' + lote.length + ' trechos');
+        saida.push(...vetores);
+        break;
+      } catch (e) {
+        tentativa++;
+        if (tentativa >= 4) throw e;
+        console.warn('Embeddings: tentativa ' + tentativa + ' falhou (' + e.message + '), aguardando.');
+        await new Promise(r => setTimeout(r, 1500 * tentativa));
+      }
+    }
+  }
+  return saida;
+}
+
+// Indexa UM material: fatia o texto e grava os vetores. Devolve quantos trechos gravou.
+async function indexDocument(doc) {
+  if (!useDb || !pgvectorReady || !embeddingConfigured()) return 0;
+  const trechos = chunkText(doc.text);
+  if (!trechos.length) return 0;
+  const vetores = await embedTexts(trechos, 'document');
+  await pool.query('DELETE FROM doc_chunks WHERE doc_id=$1', [doc.id]);
+  const LOTE = 25;   // inserção em bloco: menos ida e volta ao banco
+  for (let i = 0; i < trechos.length; i += LOTE) {
+    const valores = [];
+    const params = [];
+    let p = 1;
+    for (let j = i; j < Math.min(i + LOTE, trechos.length); j++) {
+      valores.push('($' + p++ + ',$' + p++ + ',$' + p++ + ',$' + p++ + ',$' + p++ + '::vector,$' + p++ + ')');
+      params.push('ch-' + crypto.randomBytes(8).toString('hex'), doc.id, j, trechos[j], JSON.stringify(vetores[j]), EMBEDDING_MODEL);
+    }
+    await pool.query(`INSERT INTO doc_chunks (id, doc_id, ord, text, embedding, modelo) VALUES ${valores.join(',')}`, params);
+  }
+  return trechos.length;
+}
+
+async function getIndexStatus() {
+  const base = {
+    pgvector: Boolean(pgvectorReady), configured: embeddingConfigured(),
+    provider: EMBEDDING_PROVIDER, model: EMBEDDING_MODEL, dim: EMBEDDING_DIM,
+    total: 0, indexed: 0, chunks: 0
+  };
+  if (!useDb) return base;
+  const t = await pool.query('SELECT COUNT(*)::int AS c FROM docs');
+  base.total = t.rows[0].c;
+  if (pgvectorReady) {
+    const c = await pool.query('SELECT COUNT(*)::int AS n, COUNT(DISTINCT doc_id)::int AS d FROM doc_chunks WHERE embedding IS NOT NULL');
+    base.chunks = c.rows[0].n;
+    base.indexed = c.rows[0].d;
+  }
+  return base;
+}
+
+async function getDocsWithoutChunks(limit) {
+  if (!useDb || !pgvectorReady) return [];
+  const { rows } = await pool.query(`
+    SELECT d.id, d.name, d.text FROM docs d
+    LEFT JOIN (SELECT DISTINCT doc_id FROM doc_chunks) c ON c.doc_id = d.id
+    WHERE c.doc_id IS NULL
+    ORDER BY d.created_at ASC
+    LIMIT $1
+  `, [limit]);
+  return rows;
+}
+
 let _docsCache = null;
 let _docsCacheAt = 0;
 const DOCS_CACHE_TTL_MS = 10 * 60 * 1000;
@@ -1001,10 +1153,16 @@ async function loadMetadataMap() {
       palavras_chave: r.palavras_chave || [],
       resumo: r.resumo || '',
       tipo_documento: r.tipo_documento || '',
-      // Campos de filtro fino (patch 12/11/2026). Ficam vazios enquanto a catalogação não
-      // preenchê-los — e, vazios, NÃO filtram nada (ver PASSO C em retrieveContext).
+      // Filtro fino. As colunas passaram a existir de fato em 24/11/2026 — antes o código lia
+      // campos que a tabela não tinha, então o filtro de espécie nunca funcionou.
+      // Vazios, NÃO filtram nada (ver filtro de espécie em retrieveContext).
       especie: r.especie || '',
-      local_anatomico: r.local_anatomico || ''
+      local_anatomico: r.local_anatomico || '',
+      referencia_completa: r.referencia_completa || '',
+      autores: r.autores || '',
+      ano: r.ano || '',
+      revista: r.revista || '',
+      doi: r.doi || ''
     };
   });
   _metaCache = map;
@@ -1019,47 +1177,41 @@ function invalidateMetaCache() { _metaCache = null; }
 // parar no rodapé como "Fonte consultada: Protocolo CHOP (exemplo)".
 const EH_EXEMPLO = /\b(exemplo|example|demonstra[cç][aã]o|placeholder|amostra)\b/i;
 
-async function retrieveContext(query, docs, topN = 5) {
-  const qWords = normalize(query).split(/\W+/)
-    .filter(w => w.length > 3 && !STOPWORDS.has(w));
-  const qNorm = normalize(query);
-  const metaMap = await loadMetadataMap();
+// ---------- Busca no acervo ----------
+// Duas camadas, nesta ordem:
+//   1. SEMÂNTICA (pgvector): acha o trecho pelo SENTIDO. "cachorro" encontra "dogs",
+//      "como tratar" encontra "treatment". É a camada que resolve o problema real.
+//   2. PALAVRA (retaguarda): mantida para quando não há vetor (acervo recém-subido, chave
+//      ausente, extensão desligada) e para valorizar o trecho que tem o termo exato —
+//      nome de droga, sigla e dose continuam achando pelo literal.
+// A camada de palavra só varre o acervo inteiro quando NÃO existe vetor; com vetor, ela
+// reordena apenas os trechos que a semântica já trouxe (custo desprezível por pergunta).
 
-  // Filtro de segurança: material de exemplo/demonstração fica fora da busca.
-  const docsReais = docs.filter(d => !EH_EXEMPLO.test(d.name || ''));
+// Reordena por palavra um conjunto de trechos já obtido (usado quando há vetores).
+function refinarPorPalavra(trechos, qWords) {
+  return trechos.map(c => {
+    const cNorm = normalize(c.text);
+    let casou = 0;
+    qWords.forEach(w => { if (cNorm.includes(w) || cNorm.includes(radical(w))) casou++; });
+    const lex = qWords.length ? casou / qWords.length : 0;
+    return { ...c, lex, score: 0.75 * (c.sim || 0) + 0.25 * lex };
+  });
+}
 
-  // ---- PASSO A: qual é o ASSUNTO da pergunta? ----
-  // Mede a tag mais específica que a pergunta contém, olhando TRÊS fontes:
-  //   1. as tags do metadado (tipo de neoplasia, tópicos, palavras-chave)
-  //   2. o NOME do arquivo (autor, ano, assunto — informação que antes era jogada fora)
-  //   3. o corpo do texto (último recurso, para acervo sem catalogação)
-  // A especificidade é o TAMANHO da tag, não o tamanho do nome do arquivo: assim
-  // "sarcoma de partes moles" (23) continua vencendo "sarcoma esplenico" (17), mas uma
-  // pergunta como "protocolo chop" deixa de cair no vazio só porque a ficha catalográfica
-  // não repetiu a palavra "chop" que está no título do PDF.
+// Retaguarda completa: a busca por palavra original, intacta. Só roda sem vetores.
+function buscaPorPalavra(query, docsReais, metaMap, qWords, qNorm, limite, topN) {
   const especificidade = {};
   const TAGS_DO_NOME = /\b(chop|lopp|uw-?25|uw-?19|linfoma|linfomas|mastocitoma|melanoma|osteossarcoma|hemangiossarcoma|sarcoma|carcinoma|adenocarcinoma|mama|mamaria|mamario|tireoide|esplenico|timoma|insulinoma|feocromocitoma)\b/gi;
   docsReais.forEach(d => {
     const meta = metaMap[d.id];
     const tags = [];
-    if (meta) {
-      tags.push(...(meta.tipo_neoplasia || []), ...(meta.topicos || []), ...(meta.palavras_chave || []));
-    }
-    // tags extraídas do nome do arquivo (só termos de assunto, para não virar ruído)
-    const nomeNorm = normalize(d.name);
+    if (meta) tags.push(...(meta.tipo_neoplasia || []), ...(meta.topicos || []), ...(meta.palavras_chave || []));
     (normalize(d.name).match(new RegExp(TAGS_DO_NOME.source, 'g')) || []).forEach(t => tags.push(t));
-
     let melhorTag = 0;
     tags.forEach(t => {
       const tag = normalize(String(t));
-      if (tag.length > 3 && (qNorm.includes(tag) || qNorm.includes(radical(tag)))) {
-        melhorTag = Math.max(melhorTag, tag.length);
-      }
+      if (tag.length > 3 && (qNorm.includes(tag) || qNorm.includes(radical(tag)))) melhorTag = Math.max(melhorTag, tag.length);
     });
-
-    // 3) último recurso: se nada casou e o documento não tem ficha, olha o próprio texto.
-    //    Só conta termo FORTE (substantivo de assunto no início de um trecho), para não
-    //    transformar palavra comum em assunto.
     if (melhorTag === 0 && !meta) {
       const corpo = normalize(d.text.slice(0, 4000));
       ['linfoma','mastocitoma','melanoma','osteossarcoma','hemangiossarcoma','sarcoma',
@@ -1068,88 +1220,98 @@ async function retrieveContext(query, docs, topN = 5) {
         if (qNorm.includes(t) && corpo.includes(t)) melhorTag = Math.max(melhorTag, t.length);
       });
     }
-
     especificidade[d.id] = melhorTag;
   });
 
-  // ---- PASSO B: decidir quais documentos podem responder ----
-  // Regra de convivência entre acervo catalogado e não catalogado (importante):
-  //   - documento CATALOGADO só entra se o assunto casar (é o filtro que impede o sarcoma
-  //     esplênico de responder pergunta de sarcoma de partes moles);
-  //   - documento AINDA NÃO catalogado continua disponível como retaguarda, senão um acervo
-  //     recém-subido (doc_metadata vazia) faria o agente responder "não tenho" para TUDO.
-  //     A proteção contra ruído nesse caso é o LIMIAR_TEXTO abaixo.
   const melhorAssunto = Math.max(0, ...Object.values(especificidade));
   const catalogados = docsReais.filter(d => metaMap[d.id]);
   const naoCatalogados = docsReais.filter(d => !metaMap[d.id]);
-
-  if (melhorAssunto === 0 && naoCatalogados.length === 0) {
-    // Acervo inteiro catalogado e nenhum documento fala do assunto perguntado:
-    // é o caso honesto de "não está no acervo" (ver regra 0b no prompt).
-    return [];
-  }
+  if (melhorAssunto === 0 && naoCatalogados.length === 0) return [];
 
   const corte = melhorAssunto * CORTE_ESPECIFICIDADE;
-  let permitidos = melhorAssunto === 0
-    ? naoCatalogados.slice()                                                  // retaguarda
-    : docsReais.filter(d => especificidade[d.id] >= corte || !metaMap[d.id]);  // assunto + retaguarda
+  const permitidos = melhorAssunto === 0
+    ? naoCatalogados.slice()
+    : docsReais.filter(d => especificidade[d.id] >= corte || !metaMap[d.id]);
 
-  // Filtro de espécie: só age quando a catalogação informou a espécie do documento E a
-  // pergunta nomeia a espécie do paciente. Sem essa informação, não filtra (não piora nada).
-  const qEspecie = /\b(gato|gatos|felino|felinos|gatinho)\b/.test(qNorm) ? 'gato'
-    : /\b(cao|caes|cachorro|cachorros|canino|caninos)\b/.test(qNorm) ? 'cao'
-    : null;
-  if (qEspecie) {
-    const compativeis = permitidos.filter(d => {
-      const esp = normalize(String((metaMap[d.id] && metaMap[d.id].especie) || ''));
-      if (!esp || esp === 'ambos' || esp === 'todas') return true;  // sem dado: não filtra
-      return esp.includes(qEspecie);
-    });
-    // Se havia documento do assunto mas todos são de outra espécie, a resposta correta é
-    // "não tenho para esta espécie" — cair de volta no documento de outra espécie seria
-    // exatamente o erro que este filtro existe para impedir (ex.: dose felina respondida
-    // com protocolo canino).
-    permitidos = compativeis;
-  }
-  if (!permitidos.length) return [];
-
-  // ---- PASSO D: busca por palavras, apenas dentro dos documentos permitidos ----
   const scored = [];
   permitidos.forEach(d => {
     const meta = metaMap[d.id];
     const tags = meta
-      ? [...(meta.tipo_neoplasia || []), ...(meta.topicos || []), ...(meta.palavras_chave || [])]
-          .map(t => normalize(String(t)))
+      ? [...(meta.tipo_neoplasia || []), ...(meta.topicos || []), ...(meta.palavras_chave || [])].map(t => normalize(String(t)))
       : [];
-
     let metaBoost = 0;
-    qWords.forEach(w => {
-      if (tags.some(tag => tag.includes(w) || w.includes(tag))) metaBoost += 4;
-    });
-
+    qWords.forEach(w => { if (tags.some(tag => tag.includes(w) || w.includes(tag))) metaBoost += 4; });
     chunkText(d.text).forEach(c => {
       const cNorm = normalize(c);
-      let score = metaBoost;
-      let casaTexto = 0;   // palavras da pergunta presentes no TEXTO (sem contar metadado)
-      qWords.forEach(w => {
-        if (cNorm.includes(w) || cNorm.includes(radical(w))) { score++; casaTexto++; }
-      });
-      // Pergunta de uma palavra ("chop") não tem como casar 2 no texto: exige 1.
+      let score = metaBoost, casaTexto = 0;
+      qWords.forEach(w => { if (cNorm.includes(w) || cNorm.includes(radical(w))) { score++; casaTexto++; } });
       if (casaTexto >= Math.min(LIMIAR_TEXTO, qWords.length)) {
-        scored.push({ source: d.name, docId: d.id, text: c, score });
+        scored.push({ source: d.name, docId: d.id, text: c, score, sim: 0, lex: 1 });
       }
     });
   });
-
-  // Desempate: em igualdade de score, o documento CATALOGADO vem antes. Assim, à medida que
-  // a catalogação avança, o acervo fica progressivamente melhor sem precisar de um "tudo ou nada".
   scored.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
-    const aCat = metaMap[a.docId] ? 1 : 0;
-    const bCat = metaMap[b.docId] ? 1 : 0;
-    return bCat - aCat;
+    return (metaMap[b.docId] ? 1 : 0) - (metaMap[a.docId] ? 1 : 0);
   });
-  return scored.slice(0, topN);
+  return scored.slice(0, limite || topN);
+}
+
+async function retrieveContext(query, docs, topN = 5) {
+  const docsReais = docs.filter(d => !EH_EXEMPLO.test(d.name || ''));
+  if (!docsReais.length) return [];
+  const byId = new Map(docsReais.map(d => [d.id, d]));
+  const qNorm = normalize(query);
+  const qWords = qNorm.split(/\W+/).filter(w => w.length > 3 && !STOPWORDS.has(w));
+  const metaMap = await loadMetadataMap();
+
+  // Espécie citada na pergunta: filtro de segurança clínica (dose felina x protocolo canino).
+  const qEspecie = /\b(gato|gatos|felino|felinos|gatinho)\b/.test(qNorm) ? 'gato'
+    : /\b(cao|caes|cachorro|cachorros|canino|caninos)\b/.test(qNorm) ? 'cao' : null;
+
+  // ---- Passe 1: semântica ----
+  let resultados = [];
+  if (pgvectorReady && embeddingConfigured()) {
+    try {
+      const [qv] = await embedTexts([query], 'query');
+      if (qv) {
+        const limite = Math.max(topN * 8, 40);
+        const { rows } = await pool.query(
+          `SELECT c.doc_id, c.text, (1 - (c.embedding <=> $1::vector)) AS sim
+             FROM doc_chunks c
+            WHERE c.embedding IS NOT NULL AND c.doc_id = ANY($2::text[])
+            ORDER BY c.embedding <=> $1::vector
+            LIMIT $3`,
+          [JSON.stringify(qv), docsReais.map(d => d.id), limite]
+        );
+        resultados = refinarPorPalavra(
+          rows.map(r => ({ docId: r.doc_id, source: (byId.get(r.doc_id) || {}).name, text: r.text, sim: Number(r.sim) || 0 })),
+          qWords
+        );
+      }
+    } catch (e) {
+      console.error('Busca semântica falhou nesta pergunta, usando a busca por palavra:', e.message);
+    }
+  }
+
+  // ---- Passe 2: retaguarda por palavra (só quando não houve resultado semântico) ----
+  if (!resultados.length) {
+    resultados = buscaPorPalavra(query, docsReais, metaMap, qWords, qNorm, Math.max(topN * 4, 20), topN);
+  }
+
+  // ---- Filtro de espécie: age só quando o material informa a espécie ----
+  if (qEspecie) {
+    const compativeis = resultados.filter(c => {
+      const esp = normalize(String((metaMap[c.docId] && metaMap[c.docId].especie) || ''));
+      if (!esp || esp === 'ambos' || esp === 'todas') return true;
+      return esp.includes(qEspecie);
+    });
+    resultados = compativeis;
+  }
+  if (!resultados.length) return [];
+
+  resultados.sort((a, b) => b.score - a.score);
+  return resultados.slice(0, topN);
 }
 
 // ---------- Triagem Oncoway: agente de catalogação do acervo ----------
@@ -1157,7 +1319,9 @@ async function retrieveContext(query, docs, topN = 5) {
 // estruturada (tipo de neoplasia, tópicos, palavras-chave, resumo) + as doses/protocolos
 // mencionados, numa tabela própria para a mentora revisar.
 const CATALOG_SYSTEM_PROMPT = `Você é um agente de catalogação de acervo médico-veterinário ("Triagem Oncoway").
-Leia o material abaixo e extraia metadados estruturados para melhorar buscas futuras.
+Leia o material abaixo e extraia metadados estruturados. Esta ficha tem TRÊS finalidades: (a) permitir a
+citação com referência completa na resposta, (b) alimentar o filtro de espécie e de local anatômico — que é
+uma proteção clínica, não um detalhe — e (c) descrever o material para quem for procurá-lo depois.
 Responda SOMENTE com um objeto JSON válido, sem nenhum texto antes ou depois, EXATAMENTE neste formato:
 {
   "tipo_neoplasia": ["..."],
@@ -1165,6 +1329,13 @@ Responda SOMENTE com um objeto JSON válido, sem nenhum texto antes ou depois, E
   "palavras_chave": ["..."],
   "resumo": "...",
   "tipo_documento": "...",
+  "especie": "cao|gato|ambos",
+  "local_anatomico": ["..."],
+  "autores": "...",
+  "ano": "...",
+  "revista": "...",
+  "doi": "...",
+  "referencia_completa": "...",
   "doses": [ { "medicamento": "...", "dose": "...", "indicacao": "...", "especie": "..." } ]
 }
 Regras:
@@ -1173,6 +1344,14 @@ Regras:
 - palavras_chave: 5 a 15 termos e sinônimos que um aluno poderia usar para buscar esse conteúdo, incluindo termos leigos e técnicos.
 - resumo: 1-2 frases resumindo o conteúdo do material.
 - tipo_documento: ex: "artigo científico", "transcrição de aula", "capítulo de livro", "protocolo clínico".
+- especie: a espécie estudada no MATERIAL COMO UM TODO. Use exatamente "cao", "gato" ou "ambos". Se o
+  material não disser, use "" (vazio) — NUNCA chute: este campo decide se o material pode responder uma
+  pergunta sobre gato ou sobre cão, e um valor errado aqui vira erro clínico.
+- local_anatomico: locais anatômicos estudados (ex: "pele", "linfonodo", "baço", "mama"). Lista vazia se não se aplica.
+- autores, ano, revista, doi: extraia da própria fonte (cabeçalho, rodapé, citação interna). Se não estiver no
+  texto, deixe "" — nunca deduza pelo nome do arquivo nem invente.
+- referencia_completa: a citação no formato "Autores. Título. Revista. Ano;volume(páginas). doi: ...", montada
+  APENAS com dados que aparecem no texto. Se faltar dado, monte o que existe e deixe o resto de fora.
 - doses: toda dose de medicamento mencionada no texto, com a indicação clínica associada. Lista vazia se não houver nenhuma.
 - Nunca invente informação que não está no texto. Se um campo não puder ser preenchido com confiança, use lista/string vazia.`;
 
@@ -1196,17 +1375,27 @@ async function catalogDocument(doc) {
 async function saveMetadata(docId, docName, meta) {
   if (!useDb) return;
   await pool.query(`
-    INSERT INTO doc_metadata (doc_id, tipo_neoplasia, topicos, palavras_chave, resumo, tipo_documento)
-    VALUES ($1,$2,$3,$4,$5,$6)
+    INSERT INTO doc_metadata (doc_id, tipo_neoplasia, topicos, palavras_chave, resumo, tipo_documento,
+                              especie, local_anatomico, referencia_completa, autores, ano, revista, doi)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
     ON CONFLICT (doc_id) DO UPDATE SET
-      tipo_neoplasia=$2, topicos=$3, palavras_chave=$4, resumo=$5, tipo_documento=$6, catalogued_at=now()
+      tipo_neoplasia=$2, topicos=$3, palavras_chave=$4, resumo=$5, tipo_documento=$6,
+      especie=$7, local_anatomico=$8, referencia_completa=$9, autores=$10, ano=$11, revista=$12, doi=$13,
+      catalogued_at=now()
   `, [
     docId,
     JSON.stringify(meta.tipo_neoplasia || []),
     JSON.stringify(meta.topicos || []),
     JSON.stringify(meta.palavras_chave || []),
     meta.resumo || '',
-    meta.tipo_documento || ''
+    meta.tipo_documento || '',
+    (meta.especie || '').toLowerCase(),
+    JSON.stringify(meta.local_anatomico || []),
+    meta.referencia_completa || '',
+    meta.autores || '',
+    String(meta.ano || ''),
+    meta.revista || '',
+    meta.doi || ''
   ]);
 
   await pool.query('DELETE FROM doc_doses WHERE doc_id=$1', [docId]);
@@ -1955,7 +2144,10 @@ ${modeRule}
 
 async function callClaude({ system, messages, tools, maxTokens, onUsage }) {
   const body = {
-    model: 'claude-sonnet-4-6',
+    // Sonnet 5.5 substitui o 4.6: mesma família, US$ 2/US$ 10 por milhão de tokens em vez de
+    // US$ 3/US$ 15, e o 4.6 já está listado como modelo legado. ANTHROPIC_MODEL permite
+    // voltar ao modelo anterior pelo painel do Render sem mexer no código.
+    model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-5-5',
     max_tokens: maxTokens || 2000,
     system,
     messages
@@ -2155,11 +2347,14 @@ app.post('/api/admin/docs', requireAdmin, async (req, res) => {
   const docId = await addDoc(name, text);
   res.json(await loadDocs());
 
-  // Triagem Oncoway: cataloga em segundo plano, sem fazer o upload esperar.
+  // Triagem Oncoway + indexação semântica em segundo plano, sem fazer o upload esperar.
   if (useDb) {
     catalogDocument({ name, text })
       .then(meta => { if (meta) return saveMetadata(docId, name, meta); })
       .catch(err => console.error('Triagem Oncoway: erro ao catalogar', name, err));
+    indexDocument({ id: docId, name, text })
+      .then(n => { if (n) console.log('Indexação: ' + n + ' trechos gravados de ' + name); })
+      .catch(err => console.error('Indexação: erro ao indexar', name, err.message));
   }
 });
 app.delete('/api/admin/docs/:id', requireAdmin, async (req, res) => {
@@ -2171,6 +2366,29 @@ app.delete('/api/admin/docs/:id', requireAdmin, async (req, res) => {
 
 app.get('/api/admin/catalog-status', requireAdmin, async (req, res) => {
   res.json(await getCatalogStatus());
+});
+
+// ---- Indexação semântica (busca por sentido) ----
+app.get('/api/admin/index-status', requireAdmin, async (req, res) => {
+  try { res.json(await getIndexStatus()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Indexa um lote de materiais ainda sem vetor. O botão do painel chama em repetição até zerar.
+// Lote pequeno de propósito: no plano grátis do Render a requisição precisa terminar rápido,
+// e um material grande pode levar alguns segundos.
+app.post('/api/admin/index-batch', requireAdmin, async (req, res) => {
+  if (!useDb) return res.status(400).json({ error: 'A indexação exige banco de dados configurado (DATABASE_URL).' });
+  if (!pgvectorReady) return res.status(400).json({ error: 'A extensão pgvector não está ativa. Ative "vector" no Supabase (Database > Extensions) e reinicie o serviço.' });
+  if (!embeddingConfigured()) return res.status(400).json({ error: 'Falta a chave de embeddings: configure OPENAI_API_KEY (ou VOYAGE_API_KEY) no Render.' });
+  const pendentes = await getDocsWithoutChunks(3);
+  let trechos = 0, processados = 0;
+  for (const doc of pendentes) {
+    try { trechos += await indexDocument(doc); processados++; }
+    catch (err) { console.error('Indexação: falhou em', doc.name, err.message); }
+  }
+  const status = await getIndexStatus();
+  res.json({ processados, trechos, ...status });
 });
 
 // Processa um lote de artigos ainda não catalogados (a mentora pode clicar de novo até
