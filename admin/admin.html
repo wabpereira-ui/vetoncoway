@@ -171,6 +171,17 @@
         <button class="btn" id="catalogBtn" onclick="runCatalogBatch()">Catalogar pendentes</button>
       </div>
 
+      <h2>Busca por sentido <span style="font-weight:400; text-transform:none; letter-spacing:0;">— indexação semântica</span></h2>
+      <div class="panel">
+        <div style="font-size:12px; color:var(--ink-soft); margin-bottom:12px;">
+          Transforma cada trecho do acervo em vetor, para a busca achar pelo <b>sentido</b> em vez da palavra exata
+          ("cachorro" encontra "dogs", "como tratar" encontra "treatment"). Rode uma vez; material novo é indexado
+          automaticamente no upload. A catalogação acima continua útil, mas sozinha ela <b>não</b> muda o que a busca encontra.
+        </div>
+        <div id="indexStatus" class="status" style="margin-bottom:10px;">Carregando status...</div>
+        <button class="btn" id="indexBtn" onclick="runIndexBatch()">Indexar pendentes</button>
+      </div>
+
       <h2>Doses/protocolos extraídos</h2>
       <div id="doseList"></div>
     </div>
@@ -373,7 +384,7 @@ function escapeHtml(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repl
 const PAGES = {
   geral:     ['Visão geral', 'O que está acontecendo agora e o que precisa da sua atenção.'],
   acervo:    ['Acervo', 'Os materiais que alimentam as respostas. Busque, adicione ou remova.'],
-  triagem:   ['Triagem e doses', 'Catalogação automática dos artigos e revisão das doses extraídas.'],
+  triagem:   ['Triagem e doses', 'Catalogação dos artigos, indexação da busca por sentido e revisão das doses extraídas.'],
   alunos:    ['Alunos', 'Convites, acessos e status de cada aluno.'],
   planos:    ['Planos e custos', 'Limites de cada plano, gancho de exames grátis e custo estimado do mês.'],
   pagamentos: ['Pagamentos', 'Assinaturas do Asaas, atrasos e regras de cobrança.'],
@@ -397,6 +408,7 @@ function showPage(name){
   if(name === 'aparencia') loadAppearance();
   if(name === 'pagamentos') loadPagamentos();
   if(name === 'planos') loadPlans();
+  if(name === 'triagem'){ loadCatalogStatus(); loadIndexStatus(); }
 }
 
 function setBadge(id, n){
@@ -528,6 +540,53 @@ async function handleFileUpload(event){
 }
 
 loadDocs();
+
+async function loadIndexStatus(){
+  const el = document.getElementById('indexStatus');
+  const btn = document.getElementById('indexBtn');
+  if(!el) return;
+  try{
+    const st = await (await fetch('/api/admin/index-status')).json();
+    if(!st.configured){
+      el.textContent = 'Falta a chave de embeddings. Configure OPENAI_API_KEY no Render (Environment) e reinicie o servico.';
+      btn.disabled = true; return;
+    }
+    if(!st.pgvector){
+      el.textContent = 'A extensao pgvector nao esta ativa no banco. Ative "vector" no Supabase (Database > Extensions) e reinicie o servico.';
+      btn.disabled = true; return;
+    }
+    const pend = st.total - st.indexed;
+    el.textContent = st.indexed + ' de ' + st.total + ' material(is) indexado(s)' +
+      (st.chunks ? ' · ' + st.chunks.toLocaleString('pt-BR') + ' trechos' : '') +
+      (pend > 0 ? ' — ' + pend + ' pendente(s).' : ' — tudo em dia') +
+      ' · ' + st.model;
+    btn.disabled = pend <= 0;
+  }catch(e){ el.textContent = 'Erro ao ler o status da indexacao.'; }
+}
+
+async function runIndexBatch(){
+  const btn = document.getElementById('indexBtn');
+  const el = document.getElementById('indexStatus');
+  btn.disabled = true;
+  let rodadas = 0, totalTrechos = 0;
+  // Lote pequeno de proposito (o servico no plano gratis precisa terminar rapido),
+  // entao repetimos daqui ate zerar a fila.
+  while(rodadas < 400){
+    rodadas++;
+    el.textContent = 'Indexando... (lote ' + rodadas + ', ' + totalTrechos + ' trechos)';
+    try{
+      const res = await fetch('/api/admin/index-batch', { method:'POST' });
+      const d = await res.json();
+      if(!res.ok){ el.textContent = d.error || 'Erro ao indexar.'; btn.disabled = false; return; }
+      totalTrechos += (d.trechos || 0);
+      if(d.processados === 0) break;
+    }catch(e){
+      el.textContent = 'Erro de conexao durante a indexacao (' + totalTrechos + ' trechos feitos). Pode clicar de novo: o que ja foi indexado nao e refeito.';
+      btn.disabled = false; return;
+    }
+  }
+  await loadIndexStatus();
+}
 
 async function loadCatalogStatus(){
   const res = await fetch('/api/admin/catalog-status');
