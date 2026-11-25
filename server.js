@@ -2406,7 +2406,18 @@ const REGRA_SEM_COBERTURA = `0b) COBERTURA DO ACERVO — o que fazer quando o ma
    b) diga quantas variantes existem e qual é a diferença entre elas em LINHAS GERAIS;
    c) cite a fonte primária com referência completa e DOI para ela consultar;
    d) oriente levar o esquema para a mentoria, onde está a versão que a mentora usa.
-   Se o calendário ESTIVER no acervo, aí sim reproduza — citando a fonte do acervo.`;
+   Se o calendário ESTIVER no acervo, aí sim reproduza — citando a fonte do acervo.
+
+   USO DAS DOSES EXTRAÍDAS DO ACERVO (bloco "DOSES EXTRAÍDAS DO ACERVO"):
+   Quando o contexto trouxer esse bloco, ele vem da catalogação dos próprios artigos do acervo
+   e é material legítimo — não é complemento externo. Ainda assim:
+   - cite SEMPRE a fonte de cada dose (o artigo que acompanha a linha). Dose sem fonte não sai.
+   - apresente como "o estudo relata X mg/m²", nunca como "o protocolo da mentoria é X".
+     Dose de estudo não é protocolo dela; a versão que ela usa está na mentoria.
+   - se a dose for da outra espécie ou estiver marcada como ambígua (sem espécie), diga isso
+     antes de usá-la. Não transfira dose de cão para gato nem o contrário.
+   - se o bloco não trouxer a dose que a pergunta pede, diga que o acervo não traz aquela dose —
+     não complete de memória.`;
 
 const REGRA_CITACAO = `0c) Ao citar qualquer fonte, use a REFERÊNCIA COMPLETA do metadado (autor, ano, revista,
 DOI), nunca o nome do arquivo PDF. Se o metadado não tiver a referência, diga "referência não
@@ -2527,6 +2538,68 @@ function limparTrechoParaContexto(texto) {
   return limpo;
 }
 
+// Doses extraidas dos artigos pelo robo de catalogacao, filtradas pela pergunta.
+// A tabela doc_doses existia desde o inicio e NUNCA era consultada na resposta: a dose estava
+// no banco e nao chegava ao aluno. Joice confirmou (25/11) que as doses estao corretas.
+//
+// Dois filtros, ambos de segurança clínica:
+//   · espécie: pergunta sobre gato não recebe dose de cão (e vice-versa). Dose sem espécie
+//     declarada é ambígua — vai junto, mas rotulada, para o modelo não apresentar como certa.
+//   • assunto: só entra dose de artigo cujo assunto casa com o da pergunta.
+async function dosesRelevantes(pergunta, assuntosPergunta, limite = 12) {
+  if (!useDb) return [];
+  let linhas;
+  try {
+    ({ rows: linhas } = await pool.query(
+      `SELECT id, doc_id, fonte_nome, medicamento, dose, indicacao, especie
+         FROM doc_doses ORDER BY created_at DESC LIMIT 400`
+    ));
+  } catch (e) {
+    console.warn('Doses: não consegui ler doc_doses (' + e.message + ')');
+    return [];
+  }
+  if (!linhas.length) return [];
+
+  const qNorm = normalize(pergunta);
+  const qEspecie = /\b(gato|gatos|felino|felinos|gatinho)\b/.test(qNorm) ? 'gato'
+    : /\b(cao|caes|cachorro|cachorros|canino|caninos)\b/.test(qNorm) ? 'cao' : null;
+
+  const comAssunto = linhas.map(l => ({
+    ...l,
+    assuntos: assuntosDoTexto(String(l.fonte_nome || '') + ' ' + String(l.indicacao || '') + ' ' + String(l.medicamento || ''))
+  }));
+
+  let filtradas = comAssunto;
+  // assunto: quando a pergunta tem assunto definido, prioriza dose de artigo do mesmo assunto.
+  if (assuntosPergunta.length) {
+    const casam = filtradas.filter(d => d.assuntos.some(a => assuntosPergunta.includes(a)));
+    if (casam.length) filtradas = casam;
+  }
+  // espécie: descarta explicitamente a outra espécie. Nunca cai de volta na outra.
+  if (qEspecie) {
+    filtradas = filtradas.filter(d => {
+      const esp = normalize(String(d.especie || '')).trim();
+      if (!esp) return true;                       // sem espécie: vai, mas rotulada
+      if (esp === 'ambos' || esp === 'todas') return true;
+      return esp.includes(qEspecie);
+    });
+  }
+  return filtradas.slice(0, limite);
+}
+
+// Bloco de doses para o contexto. Cada linha carrega a fonte; o prompt exige citá-la.
+function montarBlocoDoses(doses) {
+  if (!doses.length) return '';
+  const linhas = doses.map(d => {
+    const esp = d.especie && d.especie !== 'ambos' ? ' [' + d.especie + ']' : '';
+    const ind = d.indicacao ? ' — ' + d.indicacao : '';
+    return '- ' + (d.medicamento || '(medicamento não informado)') + ': ' + (d.dose || '(dose não informada)') +
+      esp + ind + ' (fonte: ' + (d.fonte_nome || 'acervo') + ')';
+  });
+  return 'DOSES EXTRAÍDAS DO ACERVO (cada uma com o artigo de origem — cite a fonte e NÃO apresente ' +
+    'dose de estudo como protocolo da mentora):\n' + linhas.join('\n');
+}
+
 function montarContexto(trechos) {
   const uteis = trechos
     .map(c => ({ ...c, limpo: limparTrechoParaContexto(c.text) }))
@@ -2629,8 +2702,13 @@ app.post('/api/ask', access.requireApprovedApi, async (req, res) => {
 
     const docs = await loadDocs();
     const topChunks = await retrieveContext(finalQuestion, docs, planChunks);
-    const contextBlock = montarContexto(topChunks);
-    const sources = [...new Set(topChunks.map(c => c.source))];
+    // Doses do acervo entram no mesmo contexto dos trechos; sem isso a dose extraída ficava
+    // só no banco e o aluno nunca a recebia.
+    const doses = await dosesRelevantes(finalQuestion, assuntosDoTexto(finalQuestion));
+    const blocoDoses = montarBlocoDoses(doses);
+    const contextBlock = [montarContexto(topChunks), blocoDoses].filter(Boolean).join('\n\n---\n\n');
+    const sources = [...new Set([...topChunks.map(c => c.source),
+      ...doses.map(d => d.fonte_nome).filter(Boolean)])];
     const sourceDocIds = [...new Set(topChunks.map(c => c.docId))];
 
     let result;
@@ -3216,7 +3294,8 @@ app.post('/webhook', async (req, res) => {
     }
     const docs = await loadDocs();
     const topChunks = await retrieveContext(question, docs, waQuota.info && waQuota.info.limits.chunks ? waQuota.info.limits.chunks : 5);
-    const contextBlock = montarContexto(topChunks);
+    const dosesWa = await dosesRelevantes(question, assuntosDoTexto(question));
+    const contextBlock = [montarContexto(topChunks), montarBlocoDoses(dosesWa)].filter(Boolean).join('\n\n---\n\n');
     if (!whatsappSessions.has(message.from)) whatsappSessions.set(message.from, { history: [] });
     const waSession = whatsappSessions.get(message.from);
     const waResult = await askClaude(waSession, question, contextBlock, { images, examTexts });
