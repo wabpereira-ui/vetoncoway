@@ -2787,12 +2787,16 @@ app.post('/api/admin/index-batch', requireAdmin, async (req, res) => {
   if (!pgvectorReady) return res.status(400).json({ error: 'A extensão pgvector não está ativa. Ative "vector" no Supabase (Database > Extensions) e reinicie o serviço.' });
   if (!embeddingConfigured()) return res.status(400).json({ error: 'Falta a chave de embeddings: configure OPENAI_API_KEY (ou VOYAGE_API_KEY) no Render.' });
   const pendentes = await getDocsWithoutChunks(3);
-  let trechos = 0, processados = 0;
+  // `dispensados` é usado na resposta abaixo: sem declará-lo aqui o endpoint inteiro lança
+  // ReferenceError e o painel mostra "erro de conexão durante a indexação, 0 trechos feitos".
+  // Era exatamente o print. Declarar aqui e contar os três desfechos separadamente.
+  let trechos = 0, processados = 0, dispensados = 0;
   const erros = [];
   for (const doc of pendentes) {
     try {
-      trechos += await indexDocument(doc);
-      processados++;
+      const n = await indexDocument(doc);
+      if (n > 0) { trechos += n; processados++; }
+      else { dispensados++; }   // saiu da fila com motivo registrado: não é erro
     } catch (err) {
       const motivo = (err && err.message ? err.message : 'erro desconhecido').slice(0, 200);
       console.error('Indexação: falhou em', doc.name, motivo);
