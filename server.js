@@ -1370,6 +1370,47 @@ function buscaPorPalavra(query, docsReais, metaMap, qWords, qNorm, limite, topN)
   return scored.slice(0, limite || topN);
 }
 
+// Espécie de um TRECHO, lida do próprio texto. Serve para quando a ficha catalográfica não
+// informa (fichas antigas) — e é o que impede uma aula de gato de responder pergunta de cão.
+// Conta menções nos dois idiomas porque o acervo mistura artigo em inglês com aula em português.
+const PALAVRAS_CAO = /\b(c[ãa]o|c[ãa]es|cachorro|cachorros|canino|caninos|canina|caninas|dog|dogs|canine)\b/gi;
+const PALAVRAS_GATO = /\b(gato|gatos|gata|gatas|felino|felinos|felina|felinas|cat|cats|feline)\b/gi;
+function especieDoTexto(texto) {
+  const t = String(texto || '');
+  const cao = (t.match(PALAVRAS_CAO) || []).length;
+  const gato = (t.match(PALAVRAS_GATO) || []).length;
+  if (!cao && !gato) return '';
+  if (cao >= gato * 3) return 'cao';
+  if (gato >= cao * 3) return 'gato';
+  return 'ambos';
+}
+
+// Assunto do texto, para não responder linfoma com mastocitoma nem epiteliotrópico com
+// multicêntrico. Lê o nome do arquivo e o começo do trecho (título/resumo costumam vir ali).
+const ASSUNTOS = [
+  ['linfoma', /\b(linfoma|linfomas|lymphoma|lymphomas)\b/i],
+  ['mastocitoma', /\b(mastocitoma|mastocitomas|mast cell tumor|mastocytoma)\b/i],
+  ['melanoma', /\b(melanoma|melanomas)\b/i],
+  ['osteossarcoma', /\b(osteossarcoma|osteosarcoma|osteossarcomas)\b/i],
+  ['hemangiossarcoma', /\b(hemangiossarcoma|hemangiosarcoma)\b/i],
+  ['carcinoma', /\b(carcinoma|carcinomas)\b/i],
+  ['sarcoma', /\b(sarcoma|sarcomas)\b/i],
+  ['tumor mamario', /\b(mam[aá]rio|mamaria|mam[aá]rias|mammary)\b/i],
+  ['tireoide', /\b(tireoide|tireoidiano|thyroid)\b/i]
+];
+function assuntosDoTexto(texto) {
+  const t = String(texto || '');
+  return ASSUNTOS.filter(([, re]) => re.test(t)).map(([nome]) => nome);
+}
+// Subtipos que NÃO podem ser trocados entre si, mesmo sendo o mesmo assunto amplo.
+// "linfoma epiteliotrópico/cutâneo" e "linfoma multicêntrico" são condutas diferentes.
+const SUBTIPOS_LINFOMA = [
+  ['epiteliotropico', /\b(epiteliotr[oó]pic\w*|epitheliotropic|cut[aâ]neo|cut[aâ]nea|cutaneous)\b/i],
+  ['multicentrico', /\b(multic[eê]ntric\w*|multicentric)\b/i],
+  ['alimentar', /\b(alimentar|gastrointestinal|ent[eé]ric\w*|intestinal)\b/i],
+  ['mediastinal', /\b(mediastinal|mediast[ií]nic\w*|thymic)\b/i]
+];
+
 async function retrieveContext(query, docs, topN = 5) {
   const docsReais = docs.filter(d => !EH_EXEMPLO.test(d.name || ''));
   if (!docsReais.length) return [];
@@ -1412,16 +1453,54 @@ async function retrieveContext(query, docs, topN = 5) {
     resultados = buscaPorPalavra(query, docsReais, metaMap, qWords, qNorm, Math.max(topN * 4, 20), topN);
   }
 
-  // ---- Filtro de espécie: age só quando o material informa a espécie ----
-  if (qEspecie) {
-    const compativeis = resultados.filter(c => {
-      const esp = normalize(String((metaMap[c.docId] && metaMap[c.docId].especie) || ''));
-      if (!esp || esp === 'ambos' || esp === 'todas') return true;
-      return esp.includes(qEspecie);
+  // ---- Filtro de ASSUNTO ----
+// A busca semântica ordena por proximidade, mas proximidade não é o mesmo que assunto: um
+// artigo de linfoma epiteliotrópico é "próximo" de uma pergunta sobre linfoma multicêntrico,
+// e um artigo de mastocitoma é próximo de qualquer pergunta oncológica. Aqui o trecho é
+// descartado quando é claramente de outro assunto.
+const assuntosDaPergunta = assuntosDoTexto(query);
+if (assuntosDaPergunta.length) {
+  const doAssunto = resultados.filter(c => {
+    const doTrecho = assuntosDoTexto(c.text + ' ' + (c.source || ''));
+    if (!doTrecho.length) return true;                 // trecho sem assunto claro: mantém
+    return doTrecho.some(a => assuntosDaPergunta.includes(a));
+  });
+  if (doAssunto.length) resultados = doAssunto;         // se filtrar tudo, mantém o original
+}
+
+// ---- Subtipo dentro do assunto único ----
+// Só age quando a pergunta cita UM subtipo e o trecho cita outro do mesmo assunto.
+if (assuntosDaPergunta.length === 1 && assuntosDaPergunta[0] === 'linfoma') {
+  const subtipoPergunta = SUBTIPOS_LINFOMA.filter(([, re]) => re.test(query)).map(([n]) => n);
+  if (subtipoPergunta.length) {
+    // Pergunta sobre subtipo ESPECÍFICO (epiteliotrópico, alimentar...) não deve receber
+    // trecho de outro subtipo. Se sobrar só material de outro subtipo, é melhor devolver nada
+    // do que responder a pergunta errada — o prompt já sabe dizer "não cobre este subtipo".
+    const coerentes = resultados.filter(c => {
+      const noTrecho = SUBTIPOS_LINFOMA.filter(([, re]) => re.test(c.text + ' ' + (c.source || ''))).map(([n]) => n);
+      if (!noTrecho.length) return true;               // genérico serve para qualquer subtipo
+      return noTrecho.some(x => subtipoPergunta.includes(x));
     });
-    resultados = compativeis;
+    if (coerentes.length) resultados = coerentes;
   }
-  if (!resultados.length) return [];
+}
+
+// ---- Filtro de espécie ----
+// Compara por PALAVRA INTEIRA (antes era substring, e "cao" podia casar em outra palavra) e,
+// quando a ficha não informa a espécie, lê o próprio texto do trecho. Era por aqui que uma
+// aula de GATO respondia pergunta de CÃO.
+if (qEspecie) {
+  const compativeis = resultados.filter(c => {
+    let esp = normalize(String((metaMap[c.docId] && metaMap[c.docId].especie) || '')).trim();
+    if (!esp || esp === 'todas') esp = especieDoTexto(c.text);   // ficha vazia: lê o texto
+    if (!esp || esp === 'ambos') return true;
+    return esp === qEspecie || esp.includes(qEspecie);
+  });
+  // Não cai de volta no material da outra espécie: responder dose felina com protocolo canino
+  // é exatamente o erro que este filtro existe para impedir.
+  resultados = compativeis;
+}
+if (!resultados.length) return [];
 
   resultados.sort((a, b) => b.score - a.score);
   return resultados.slice(0, topN);
@@ -2583,12 +2662,30 @@ app.post('/api/admin/index-batch', requireAdmin, async (req, res) => {
   if (!embeddingConfigured()) return res.status(400).json({ error: 'Falta a chave de embeddings: configure OPENAI_API_KEY (ou VOYAGE_API_KEY) no Render.' });
   const pendentes = await getDocsWithoutChunks(3);
   let trechos = 0, processados = 0;
+  const erros = [];
   for (const doc of pendentes) {
-    try { trechos += await indexDocument(doc); processados++; }
-    catch (err) { console.error('Indexação: falhou em', doc.name, err.message); }
+    try {
+      trechos += await indexDocument(doc);
+      processados++;
+    } catch (err) {
+      const motivo = (err && err.message ? err.message : 'erro desconhecido').slice(0, 200);
+      console.error('Indexação: falhou em', doc.name, motivo);
+      erros.push({ nome: doc.name, motivo });
+      // O documento sai da fila MESMO com erro, senão ele volta em toda rodada e trava a
+      // indexação do resto do acervo. Fica registrado com o motivo, para o painel mostrar e
+      // para ser reavaliado quando houver "Reindexar do zero".
+      try {
+        await pool.query(`
+          INSERT INTO doc_metadata (doc_id, sem_indexacao_motivo, catalogued_at)
+          VALUES ($1,$2,now())
+          ON CONFLICT (doc_id) DO UPDATE SET sem_indexacao_motivo=$2
+        `, [doc.id, 'erro na indexação: ' + motivo]);
+        invalidateMetaCache();
+      } catch (e) { console.error('Indexação: não consegui registrar o erro de', doc.name, e.message); }
+    }
   }
   const status = await getIndexStatus();
-  res.json({ processados, trechos, ...status });
+  res.json({ processados, trechos, erros, ...status });
 });
 
 // Processa um lote de artigos ainda não catalogados (a mentora pode clicar de novo até
