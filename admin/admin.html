@@ -616,28 +616,37 @@ async function runIndexBatch(){
   const btn = document.getElementById('indexBtn');
   const el = document.getElementById('indexStatus');
   btn.disabled = true;
-  let rodadas = 0, totalTrechos = 0, falhas = [];
+  let rodadas = 0, totalTrechos = 0, falhas = [], totalDispensados = 0;
   // Lote pequeno de proposito (o servico no plano gratis precisa terminar rapido),
   // entao repetimos daqui ate zerar a fila.
   while(rodadas < 600){
     rodadas++;
     el.textContent = 'Indexando... (lote ' + rodadas + ', ' + totalTrechos + ' trechos' +
+      (totalDispensados ? ', ' + totalDispensados + ' dispensados' : '') +
       (falhas.length ? ', ' + falhas.length + ' com erro' : '') + ')';
     try{
       const res = await fetch('/api/admin/index-batch', { method:'POST' });
       const d = await res.json();
       if(!res.ok){ el.textContent = d.error || 'Erro ao indexar.'; btn.disabled = false; return; }
       totalTrechos += (d.trechos || 0);
+      totalDispensados += (d.dispensadosRodada || 0);
       if(d.erros && d.erros.length) falhas = falhas.concat(d.erros);
       // Para quando a fila acabou. Importante: um material que da erro SAI da fila (o servidor
       // registra o motivo), entao a rodada seguinte traz outros — nao ficamos presos nos mesmos.
-      if(d.processados === 0 && (!d.erros || d.erros.length === 0)) break;
+      // Para SÓ quando nada aconteceu de verdade na rodada: nem processou, nem dispensou, nem
+      // deu erro. Antes, uma rodada só com dispensas encerrava o loop e deixava fila atrás
+      // (foi o que parou em 466).
+      if(d.processados === 0 && (!d.dispensadosRodada) && (!d.erros || d.erros.length === 0)) break;
     }catch(e){
       el.textContent = 'Erro de conexao durante a indexacao (' + totalTrechos + ' trechos feitos). Pode clicar de novo: o que ja foi indexado nao e refeito.';
       btn.disabled = false; return;
     }
   }
   await loadIndexStatus();
+  if(totalDispensados){
+    const el2 = document.getElementById('indexStatus');
+    if(el2) el2.title = totalDispensados + ' material(is) dispensado(s) nesta rodada (motivo registrado na ficha).';
+  }
   if(falhas.length){
     const lista = falhas.slice(0, 8).map(f => '• ' + f.nome + ' — ' + f.motivo).join('\n');
     const out = document.getElementById('searchOut');
