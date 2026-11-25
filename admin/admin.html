@@ -180,6 +180,19 @@
         </div>
         <div id="indexStatus" class="status" style="margin-bottom:10px;">Carregando status...</div>
         <button class="btn" id="indexBtn" onclick="runIndexBatch()">Indexar pendentes</button>
+        <button class="btn" id="resetBtn" onclick="resetIndex()" style="margin-left:8px; background:#8a2b2b; color:#fff;">Reindexar do zero</button>
+      </div>
+
+      <h2>Testar a busca <span style="font-weight:400; text-transform:none; letter-spacing:0;">— o que o aluno recebe</span></h2>
+      <div class="panel">
+        <div style="font-size:12px; color:var(--ink-soft); margin-bottom:12px;">
+          Escreva a pergunta <b>como uma aluna escreveria</b> ("como tratar linfoma em cachorro") e veja os trechos
+          que a busca encontra. Se aqui aparecer trecho com conteúdo clínico, a busca está funcionando e o problema
+          seria a resposta do modelo. Se vier vazio, o problema é o índice.
+        </div>
+        <input id="searchQ" placeholder="Como tratar linfoma em cachorro?" style="width:100%; padding:9px; border:1px solid #ccc; border-radius:6px; font-size:14px; box-sizing:border-box;">
+        <button class="btn" onclick="testarBusca()" style="margin-top:8px;">Testar</button>
+        <div id="searchOut" style="margin-top:12px; font-size:13px;"></div>
       </div>
 
       <h2>Doses/protocolos extraídos</h2>
@@ -540,6 +553,41 @@ async function handleFileUpload(event){
 }
 
 loadDocs();
+
+async function resetIndex(){
+  if(!confirm('Isso apaga todos os vetores e devolve o acervo inteiro para a fila. Depois clique em "Indexar pendentes". Continuar?')) return;
+  const el = document.getElementById('indexStatus');
+  el.textContent = 'Apagando os vetores...';
+  const r = await fetch('/api/admin/index-reset', { method:'POST' });
+  const d = await r.json();
+  if(!r.ok){ el.textContent = d.error || 'Erro ao reindexar.'; return; }
+  await loadIndexStatus();
+}
+
+async function testarBusca(){
+  const q = (document.getElementById('searchQ').value || '').trim();
+  const out = document.getElementById('searchOut');
+  if(!q){ out.textContent = 'Escreva uma pergunta.'; return; }
+  out.textContent = 'Buscando...';
+  try{
+    const d = await (await fetch('/api/admin/search-test?q=' + encodeURIComponent(q))).json();
+    if(d.error){ out.textContent = 'Erro: ' + d.error; return; }
+    let html = '<div style="margin-bottom:8px;">' + d.encontrados + ' trecho(s) · ' + d.ms + ' ms · ' +
+      (d.semantica ? 'busca por sentido ativa' : 'SEM busca por sentido — usando a busca por palavra') + '</div>';
+    if(!d.encontrados){
+      html += '<div style="color:#8a2b2b;"><b>Nenhum trecho encontrado.</b> Ou o acervo não foi indexado (veja o status acima), ou a pergunta não tem relação com o material.</div>';
+    } else {
+      d.trechos.forEach((t,i)=>{
+        html += '<div style="border-left:3px solid #3a7; padding:6px 10px; margin-bottom:8px;">' +
+          '<div style="font-weight:600;">' + (i+1) + '. ' + escapeHtml(t.fonte) + '</div>' +
+          '<div style="color:#666; font-size:11px;">similaridade ' + t.similaridade + ' · score ' + t.score +
+            (t.especie ? ' · espécie: ' + escapeHtml(t.especie) : '') + ' · ' + t.caracteres + ' caracteres</div>' +
+          '<div style="margin-top:4px;">' + escapeHtml(t.texto) + '…</div></div>';
+      });
+    }
+    out.innerHTML = html;
+  }catch(e){ out.textContent = 'Erro de conexão ao testar.'; }
+}
 
 async function loadIndexStatus(){
   const el = document.getElementById('indexStatus');
