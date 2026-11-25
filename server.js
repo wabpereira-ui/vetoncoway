@@ -335,6 +335,27 @@ function linhaPareceReferencia(linha) {
   return false;
 }
 
+// Um trecho tem conteúdo clínico quando traz conduta, desfecho, número ou medida — e não
+// apenas citação. Serve para distinguir "o filtro apagou o artigo por engano" (ruim) de
+// "este documento é mesmo só uma lista de referências" (aí esvaziar está certo).
+function temConteudoClinico(texto) {
+  const t = String(texto || '');
+  if (t.trim().length < 60) return false;
+  // Passo 1: tira as linhas que são citação. Um título de referência cita "dogs", "lymphoma"
+  // e "CHOP" e parece frase clínica — é por isso que a decisão não pode ser tomada no texto cru.
+  const linhas = t.split(/\n/).filter(l => l.trim());
+  const corpo = linhas.filter(l => !linhaPareceReferencia(l)).join('\n').trim();
+  if (corpo.length < 60) return false;
+  // Passo 2: o que sobrou é prosa clínica?
+  const frases = corpo.split(/(?<=[.!?])\s+/).filter(f => f.trim().length > 25);
+  const marcadores = /\b(remiss\w*|sobrevida|progn\w*|dose|mg\s*\/?\s*kg|estadiamento|estadiar|subest\w*|tratamento|protocolo|quimioterapia|cirurgia|recidiva|recaída|resposta|toler\w*|efeito\w*|toxic\w*|exame|diagn\w*|paciente|c[ãa]o|c[ãa]es|gato|gatos)\b/i;
+  const comClinica = frases.filter(f => marcadores.test(f)).length;
+  const comNumero = frases.filter(f => /\d/.test(f)).length;
+  if (comClinica >= 2) return true;
+  if (comClinica >= 1 && comNumero >= 1) return true;
+  return corpo.length > t.length * 0.4 && frases.length >= 2;
+}
+
 function separarBibliografia(texto) {
   if (!texto) return { corpo: '', refs: '' };
   const bruto = String(texto);
@@ -374,9 +395,16 @@ async function indexDocument(doc) {
   // Trava de segurança: se o corte deixou menos de um quarto do texto, o filtro errou o alvo
   // (artigo com estrutura incomum). Nesse caso indexa o texto inteiro — melhor índice ruim do
   // que índice sem o conteúdo clínico, que é o que deixaria o aluno sem resposta.
-  const usarCorpo = corpo.length >= Math.max(200, doc.text.length * 0.25);
-  if (refs && !usarCorpo) console.warn('Indexação: ' + doc.name + ' — corte de bibliografia descartado (deixaria só ' + corpo.length + ' de ' + doc.text.length + ' caracteres). Indexando o texto completo.');
-  else if (refs) console.log('Indexação: ' + doc.name + ' — bibliografia separada (' + refs.length + ' caracteres fora do índice).');
+  // Documento que é essencialmente lista de referências não serve para responder nada:
+  // não entra no índice. Antes ele entrava inteiro e ocupava as primeiras posições da busca.
+  if (!temConteudoClinico(doc.text)) {
+    console.warn('Indexação: ' + doc.name + ' — SEM CONTEÚDO CLÍNICO (só referências ou texto vazio). Não indexado.');
+    return 0;
+  }
+  const corpoTemClinica = temConteudoClinico(corpo);
+  const usarCorpo = corpoTemClinica && corpo.length >= Math.max(200, doc.text.length * 0.15);
+  if (refs && usarCorpo) console.log('Indexação: ' + doc.name + ' — bibliografia separada (' + refs.length + ' caracteres fora do índice).');
+  else if (refs && !usarCorpo) console.warn('Indexação: ' + doc.name + ' — corte de bibliografia descartado (o corpo ficaria sem conteúdo clínico). Indexando o texto completo.');
   const trechos = chunkText(usarCorpo ? corpo : doc.text);
   if (!trechos.length) return 0;
   const vetores = await embedTexts(trechos, 'document');
@@ -2272,14 +2300,23 @@ function limparTrechoParaContexto(texto) {
   const t = String(texto || '');
   const linhas = t.split(/\n/);
   const mantidas = linhas.filter(l => !linhaPareceReferencia(l));
-  let limpo = mantidas.join('\n').replace(/\n{3,}/g, '\n\n').trim();
-  // Trava: se a limpeza levar mais da metade do trecho, o critério errou — devolve o original.
-  if (limpo.length < t.length * 0.5) return t.trim();
+  const limpo = mantidas.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  // Se o original NÃO tinha conteúdo clínico, ele era só bibliografia: devolver vazio é o
+  // correto — esse trecho não deve ocupar uma vaga no contexto.
+  if (!temConteudoClinico(t)) return '';
+  // O original tinha conteúdo clínico: se a limpeza apagou quase tudo, o critério errou.
+  if (limpo.length < t.length * 0.5 && !temConteudoClinico(limpo)) return t.trim();
   return limpo;
 }
 
 function montarContexto(trechos) {
-  return trechos.map(c => `[Fonte: ${c.source}]\n${limparTrechoParaContexto(c.text)}`).join('\n\n---\n\n');
+  const uteis = trechos
+    .map(c => ({ ...c, limpo: limparTrechoParaContexto(c.text) }))
+    .filter(c => c.limpo.length > 40);
+  // Se TODOS os trechos eram bibliografia, entrega os originais: contexto vazio faria o
+  // modelo responder "não tenho material" para uma pergunta que o acervo cobre.
+  const lista = uteis.length ? uteis : trechos.map(c => ({ ...c, limpo: String(c.text || '').trim() }));
+  return lista.map(c => `[Fonte: ${c.source}]\n${c.limpo}`).join('\n\n---\n\n');
 }
 
 function buildTurnContent(question, contextBlock, images, examTexts) {
