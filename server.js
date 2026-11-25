@@ -152,6 +152,10 @@ async function initDb() {
   await pool.query(`ALTER TABLE doc_metadata ADD COLUMN IF NOT EXISTS ano TEXT;`);
   await pool.query(`ALTER TABLE doc_metadata ADD COLUMN IF NOT EXISTS revista TEXT;`);
   await pool.query(`ALTER TABLE doc_metadata ADD COLUMN IF NOT EXISTS doi TEXT;`);
+  // Marca que o material foi dispensado da indexação (é só bibliografia, ou não tem texto
+  // clínico). Sem esta marca o documento voltaria para a fila em toda rodada e TRAVARIA a
+  // indexação do acervo inteiro: a fila é "documento sem trecho", e ele nunca terá trecho.
+  await pool.query(`ALTER TABLE doc_metadata ADD COLUMN IF NOT EXISTS sem_indexacao_motivo TEXT;`);
 
   // Triagem Oncoway: doses/protocolos extraídos dos artigos, isolados numa tabela própria
   // para a mentora revisar (e para permitir, no futuro, detectar divergências entre fontes).
@@ -398,7 +402,18 @@ async function indexDocument(doc) {
   // Documento que é essencialmente lista de referências não serve para responder nada:
   // não entra no índice. Antes ele entrava inteiro e ocupava as primeiras posições da busca.
   if (!temConteudoClinico(doc.text)) {
-    console.warn('Indexação: ' + doc.name + ' — SEM CONTEÚDO CLÍNICO (só referências ou texto vazio). Não indexado.');
+    // Registra o motivo para o documento SAIR da fila. Sem isso ele é escolhido de novo em
+    // toda rodada e a indexação do acervo inteiro para, porque a fila nunca avança.
+    const motivo = String(doc.text || '').trim().length < 200
+      ? 'texto muito curto para indexar'
+      : 'sem conteúdo clínico (só referências)';
+    await pool.query(`
+      INSERT INTO doc_metadata (doc_id, sem_indexacao_motivo, catalogued_at)
+      VALUES ($1,$2,now())
+      ON CONFLICT (doc_id) DO UPDATE SET sem_indexacao_motivo=$2
+    `, [doc.id, motivo]);
+    invalidateMetaCache();
+    console.warn('Indexação: ' + doc.name + ' — dispensado: ' + motivo + '.');
     return 0;
   }
   const corpoTemClinica = temConteudoClinico(corpo);
@@ -436,6 +451,8 @@ async function getIndexStatus() {
     const c = await pool.query('SELECT COUNT(*)::int AS n, COUNT(DISTINCT doc_id)::int AS d FROM doc_chunks WHERE embedding IS NOT NULL');
     base.chunks = c.rows[0].n;
     base.indexed = c.rows[0].d;
+    const d = await pool.query(`SELECT COUNT(*)::int AS c FROM doc_metadata WHERE sem_indexacao_motivo IS NOT NULL`);
+    base.dispensados = d.rows[0].c;
   }
   return base;
 }
@@ -445,7 +462,8 @@ async function getDocsWithoutChunks(limit) {
   const { rows } = await pool.query(`
     SELECT d.id, d.name, d.text FROM docs d
     LEFT JOIN (SELECT DISTINCT doc_id FROM doc_chunks) c ON c.doc_id = d.id
-    WHERE c.doc_id IS NULL
+    LEFT JOIN doc_metadata m ON m.doc_id = d.id
+    WHERE c.doc_id IS NULL AND m.sem_indexacao_motivo IS NULL
     ORDER BY d.created_at ASC
     LIMIT $1
   `, [limit]);
@@ -2553,6 +2571,9 @@ app.get('/api/admin/index-status', requireAdmin, async (req, res) => {
 app.post('/api/admin/index-reset', requireAdmin, async (req, res) => {
   if (!useDb || !pgvectorReady) return res.status(400).json({ error: 'pgvector não está ativo.' });
   await pool.query('DELETE FROM doc_chunks');
+  // Limpa também a marca de dispensa: uma reindexação completa deve reavaliar todo mundo.
+  await pool.query('UPDATE doc_metadata SET sem_indexacao_motivo = NULL');
+  invalidateMetaCache();
   res.json({ ok: true, ...(await getIndexStatus()) });
 });
 
