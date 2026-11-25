@@ -2550,9 +2550,14 @@ async function dosesRelevantes(pergunta, assuntosPergunta, limite = 12) {
   if (!useDb) return [];
   let linhas;
   try {
+    // A ficha do artigo vem junto: sem ela a dose sai sem referência e o aluno não consegue
+    // conferir nada. doc_doses só tem o nome do arquivo; a citação está em doc_metadata.
     ({ rows: linhas } = await pool.query(
-      `SELECT id, doc_id, fonte_nome, medicamento, dose, indicacao, especie
-         FROM doc_doses ORDER BY created_at DESC LIMIT 400`
+      `SELECT d.id, d.doc_id, d.fonte_nome, d.medicamento, d.dose, d.indicacao, d.especie,
+              m.referencia_completa, m.autores, m.ano, m.revista, m.doi
+         FROM doc_doses d
+         LEFT JOIN doc_metadata m ON m.doc_id = d.doc_id
+        ORDER BY d.created_at DESC LIMIT 400`
     ));
   } catch (e) {
     console.warn('Doses: não consegui ler doc_doses (' + e.message + ')');
@@ -2587,6 +2592,19 @@ async function dosesRelevantes(pergunta, assuntosPergunta, limite = 12) {
   return filtradas.slice(0, limite);
 }
 
+// Citação de uma dose. Ordem de preferência: referência completa da ficha; depois
+// autores/ano/revista/doi; por último o nome do arquivo. O nome do arquivo NÃO é uma
+// referência — quando só ele existe, o texto diz isso com clareza, em vez de "não catalogada",
+// que soa como falha do sistema para quem lê.
+function citacaoDaDose(d) {
+  if (d.referencia_completa && String(d.referencia_completa).trim()) return String(d.referencia_completa).trim();
+  const partes = [d.autores, d.ano, d.revista].filter(x => x && String(x).trim());
+  let c = partes.join(', ');
+  if (d.doi && String(d.doi).trim()) c += (c ? ' · ' : '') + 'doi:' + String(d.doi).trim();
+  if (c) return c;
+  return 'arquivo ' + (d.fonte_nome || 'do acervo') + ' (sem ficha de citação)';
+}
+
 // Bloco de doses para o contexto. Cada linha carrega a fonte; o prompt exige citá-la.
 function montarBlocoDoses(doses) {
   if (!doses.length) return '';
@@ -2594,7 +2612,7 @@ function montarBlocoDoses(doses) {
     const esp = d.especie && d.especie !== 'ambos' ? ' [' + d.especie + ']' : '';
     const ind = d.indicacao ? ' — ' + d.indicacao : '';
     return '- ' + (d.medicamento || '(medicamento não informado)') + ': ' + (d.dose || '(dose não informada)') +
-      esp + ind + ' (fonte: ' + (d.fonte_nome || 'acervo') + ')';
+      esp + ind + ' (fonte: ' + citacaoDaDose(d) + ')';
   });
   return 'DOSES EXTRAÍDAS DO ACERVO (cada uma com o artigo de origem — cite a fonte e NÃO apresente ' +
     'dose de estudo como protocolo da mentora):\n' + linhas.join('\n');
