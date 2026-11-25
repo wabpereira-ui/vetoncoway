@@ -603,9 +603,14 @@ async function loadIndexStatus(){
       el.textContent = 'A extensao pgvector nao esta ativa no banco. Ative "vector" no Supabase (Database > Extensions) e reinicie o servico.';
       btn.disabled = true; return;
     }
-    const pend = st.total - st.indexed;
+    // Contador de pendentes tem de descontar os DISPENSADOS: material dispensado tem motivo
+    // registrado e nao vai ser indexado nunca. Antes ele entrava como pendente, o painel dizia
+    // "72 pendentes" quando eram 27, e o botao ficava sempre habilitado.
+    const disp = st.dispensados || 0;
+    const pend = st.total - st.indexed - disp;
     el.textContent = st.indexed + ' de ' + st.total + ' material(is) indexado(s)' +
       (st.chunks ? ' · ' + st.chunks.toLocaleString('pt-BR') + ' trechos' : '') +
+      (disp ? ' · ' + disp + ' fora do indice (motivo registrado)' : '') +
       (pend > 0 ? ' — ' + pend + ' pendente(s).' : ' — tudo em dia') +
       ' · ' + st.model;
     btn.disabled = pend <= 0;
