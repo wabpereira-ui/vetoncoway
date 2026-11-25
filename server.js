@@ -2143,8 +2143,12 @@ const REGRA_SEM_COBERTURA = `0b) COBERTURA DO ACERVO — o que fazer quando o ma
      (autor, ano, revista, DOI). Sem referência, não afirme — diga que não tem.
    - PROIBIDO: número de dose apresentado como se viesse do acervo quando não veio.
    - PROIBIDO: inventar autor, ano, revista ou DOI. Se não sabe a referência, diga que não sabe.
-   - Quando a resposta for um esquema vindo de fora do acervo, sinalize no começo da resposta e
-     oriente a levar a versão definitiva para a mentoria.
+   - Quando a resposta for um esquema vindo de fora do acervo, sinalize ANTES de qualquer
+     conteúdo, na primeira linha da resposta — nunca no rodapé, nunca no meio. O aluno precisa
+     saber a origem antes de ler a conduta, não depois.
+   - A resposta é uma resposta clínica, não um formulário: no máximo 3 perguntas ao aluno, e
+     apenas as que mudariam a conduta agora. Uma lista de seis perguntas empurra o conteúdo
+     útil para fora da tela e não ajuda quem está com o caso na frente.
    A regra de ouro: transparência sobre a origem vale mais que completude.
 
    REGRA DURA — CALENDÁRIO E TABELA DE PROTOCOLO:
@@ -2199,6 +2203,19 @@ ${REGRA_ANTI_PRESUNCAO}
 ${REGRA_SEM_COBERTURA}
 ${REGRA_CITACAO}
 
+Regra 0a) COMO JULGAR O QUE CHEGOU (importante e frequentemente errado)
+   Os trechos do contexto vêm cortados de artigos e aulas, e quase sempre carregam junto parte
+   da lista de referências do original. A PRESENÇA de nomes de autores, revistas, anos ou DOIs
+   NÃO significa que o trecho é vazio: leia o corpo do trecho, que é onde estão os dados.
+   Antes de dizer que o acervo "só traz listas de referências", verifique se há no texto algum
+   número, população, desfecho, comparação ou conduta. Se houver QUALQUER dado clínico —
+   "155 cães receberam CHOP-19", "não houve diferença em sobrevida", "remissão em 78%" — então
+   o acervo CUBRIU aquele ponto, e você deve usá-lo e citá-lo como material da mentora.
+   PROIBIDO escrever que o acervo só tem referências quando o trecho traz dados: isso
+   desqualifica o material dela na frente do aluno e é falso.
+   Só use a frase "o acervo não traz o detalhe operacional" quando o que faltar for
+   especificamente dose, calendário, tabela ou esquema de administração.
+
 Regras obrigatórias:
 1) Se o CONTEXTO do acervo for suficiente, baseie-se nele e cite a fonte entre parênteses, ex: (Fonte: Aula 3 — Linfoma).
 ${modeRule}
@@ -2246,6 +2263,25 @@ const HISTORY_MAX_MESSAGES = 16; // 8 trocas (pergunta+resposta) de memória por
 
 // Monta a mensagem do turno atual: contexto do acervo + textos de exame extraídos (se houver)
 // + a pergunta, mais quaisquer imagens anexadas (até 5).
+// Monta o bloco de contexto que vai para o modelo. Aqui a bibliografia é retirada do próprio
+// trecho: o índice ainda pode conter trechos com lista de referências (gravados antes da
+// correção), e essa limpeza resolve sem precisar reindexar tudo de novo.
+// Preserva o título do artigo (o nome do arquivo é o que o aluno vê como fonte) e remove as
+// linhas de citação, que não têm conduta nenhuma e fazem o modelo achar que o material é vazio.
+function limparTrechoParaContexto(texto) {
+  const t = String(texto || '');
+  const linhas = t.split(/\n/);
+  const mantidas = linhas.filter(l => !linhaPareceReferencia(l));
+  let limpo = mantidas.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  // Trava: se a limpeza levar mais da metade do trecho, o critério errou — devolve o original.
+  if (limpo.length < t.length * 0.5) return t.trim();
+  return limpo;
+}
+
+function montarContexto(trechos) {
+  return trechos.map(c => `[Fonte: ${c.source}]\n${limparTrechoParaContexto(c.text)}`).join('\n\n---\n\n');
+}
+
 function buildTurnContent(question, contextBlock, images, examTexts) {
   let textPart = `CONTEXTO DO ACERVO (se relevante):\n${contextBlock || '(nenhum trecho relevante encontrado no acervo)'}\n\n`;
   if (examTexts && examTexts.length) {
@@ -2278,7 +2314,7 @@ async function askClaudeCore(history, question, contextBlock, { images, examText
     system: buildSystemPrompt(cfg),
     messages,
     tools,
-    maxTokens: 2000,
+    maxTokens: 4000,
     onUsage: u => { usage = u; }
   });
 
@@ -2334,7 +2370,7 @@ app.post('/api/ask', access.requireApprovedApi, async (req, res) => {
 
     const docs = await loadDocs();
     const topChunks = await retrieveContext(finalQuestion, docs, planChunks);
-    const contextBlock = topChunks.map(c => `[Fonte: ${c.source}]\n${c.text}`).join('\n\n---\n\n');
+    const contextBlock = montarContexto(topChunks);
     const sources = [...new Set(topChunks.map(c => c.source))];
     const sourceDocIds = [...new Set(topChunks.map(c => c.docId))];
 
@@ -2871,7 +2907,7 @@ app.post('/webhook', async (req, res) => {
     }
     const docs = await loadDocs();
     const topChunks = await retrieveContext(question, docs, waQuota.info && waQuota.info.limits.chunks ? waQuota.info.limits.chunks : 5);
-    const contextBlock = topChunks.map(c => `[Fonte: ${c.source}]\n${c.text}`).join('\n\n---\n\n');
+    const contextBlock = montarContexto(topChunks);
     if (!whatsappSessions.has(message.from)) whatsappSessions.set(message.from, { history: [] });
     const waSession = whatsappSessions.get(message.from);
     const waResult = await askClaude(waSession, question, contextBlock, { images, examTexts });
