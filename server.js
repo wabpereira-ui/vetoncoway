@@ -156,6 +156,10 @@ async function initDb() {
   // clínico). Sem esta marca o documento voltaria para a fila em toda rodada e TRAVARIA a
   // indexação do acervo inteiro: a fila é "documento sem trecho", e ele nunca terá trecho.
   await pool.query(`ALTER TABLE doc_metadata ADD COLUMN IF NOT EXISTS sem_indexacao_motivo TEXT;`);
+  // Falha de CATALOGAÇÃO é um problema diferente de "não indexar": fica em campo próprio para
+  // não contaminar os contadores de indexação (um material pode catalogar e ainda assim não
+  // gerar trecho, e vice-versa).
+  await pool.query(`ALTER TABLE doc_metadata ADD COLUMN IF NOT EXISTS catalog_erro TEXT;`);
 
   // Triagem Oncoway: doses/protocolos extraídos dos artigos, isolados numa tabela própria
   // para a mentora revisar (e para permitir, no futuro, detectar divergências entre fontes).
@@ -1554,13 +1558,15 @@ async function catalogDocument(doc) {
     messages: [{ role: 'user', content: userContent }],
     maxTokens: 1200
   });
-  if (!raw) return null;
+  if (!raw) return { erro: 'a IA não respondeu (verifique a chave e o crédito da Anthropic)' };
   try {
     const cleaned = raw.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
     return JSON.parse(cleaned);
   } catch (e) {
+    // Guarda o começo da resposta para o painel mostrar o que a IA devolveu.
+    const amostra = String(raw).replace(/\s+/g, ' ').slice(0, 120);
     console.error('Triagem Oncoway: erro ao interpretar JSON da catalogação:', e.message);
-    return null;
+    return { erro: 'a IA não devolveu JSON válido (' + e.message + '): ' + amostra };
   }
 }
 
@@ -1606,8 +1612,11 @@ async function saveMetadata(docId, docName, meta) {
 async function getCatalogStatus() {
   if (!useDb) return { total: 0, catalogued: 0, dbEnabled: false };
   const totalRes = await pool.query('SELECT COUNT(*)::int AS c FROM docs');
-  const cataloguedRes = await pool.query('SELECT COUNT(*)::int AS c FROM doc_metadata');
-  return { total: totalRes.rows[0].c, catalogued: cataloguedRes.rows[0].c, dbEnabled: true };
+  // Conta como catalogado só a ficha REAL: uma linha criada apenas para registrar falha não
+  // é uma ficha catalográfica e não pode inflar o número do painel.
+  const cataloguedRes = await pool.query('SELECT COUNT(*)::int AS c FROM doc_metadata WHERE catalog_erro IS NULL');
+  const falhasRes = await pool.query('SELECT COUNT(*)::int AS c FROM doc_metadata WHERE catalog_erro IS NOT NULL');
+  return { total: totalRes.rows[0].c, catalogued: cataloguedRes.rows[0].c, falhas: falhasRes.rows[0].c, dbEnabled: true };
 }
 
 async function getUncataloguedDocs(limit) {
@@ -1615,7 +1624,7 @@ async function getUncataloguedDocs(limit) {
   const { rows } = await pool.query(`
     SELECT d.id, d.name, d.text FROM docs d
     LEFT JOIN doc_metadata m ON m.doc_id = d.id
-    WHERE m.doc_id IS NULL
+    WHERE m.doc_id IS NULL AND m.catalog_erro IS NULL
     ORDER BY d.created_at ASC
     LIMIT $1
   `, [limit]);
@@ -2652,6 +2661,7 @@ app.post('/api/admin/index-reset', requireAdmin, async (req, res) => {
   await pool.query('DELETE FROM doc_chunks');
   // Limpa também a marca de dispensa: uma reindexação completa deve reavaliar todo mundo.
   await pool.query('UPDATE doc_metadata SET sem_indexacao_motivo = NULL');
+  await pool.query('UPDATE doc_metadata SET catalog_erro = NULL');
   invalidateMetaCache();
   res.json({ ok: true, ...(await getIndexStatus()) });
 });
@@ -2695,16 +2705,40 @@ app.post('/api/admin/catalog-batch', requireAdmin, async (req, res) => {
   const BATCH_SIZE = 8;
   const pending = await getUncataloguedDocs(BATCH_SIZE);
   let processed = 0;
+  const erros = [];
   for (const doc of pending) {
     try {
       const meta = await catalogDocument(doc);
-      if (meta) { await saveMetadata(doc.id, doc.name, meta); processed++; }
+      if (meta && !meta.erro) { await saveMetadata(doc.id, doc.name, meta); processed++; }
+      else {
+        const motivo = (meta && meta.erro) ? meta.erro : 'a catalogação não devolveu ficha';
+        console.error('Triagem Oncoway: falhou em', doc.name, '-', motivo);
+        erros.push({ nome: doc.name, motivo });
+        // Sai da fila MESMO com falha: senão o documento volta em toda rodada e a catalogação
+        // do acervo inteiro para, exatamente como aconteceu na indexação.
+        await pool.query(`
+          INSERT INTO doc_metadata (doc_id, catalog_erro, catalogued_at)
+          VALUES ($1,$2,now())
+          ON CONFLICT (doc_id) DO UPDATE SET catalog_erro=$2
+        `, [doc.id, motivo]);
+        invalidateMetaCache();
+      }
     } catch (err) {
-      console.error('Triagem Oncoway: erro ao catalogar', doc.name, err);
+      const motivo = (err && err.message ? err.message : 'erro desconhecido').slice(0, 200);
+      console.error('Triagem Oncoway: erro ao catalogar', doc.name, motivo);
+      erros.push({ nome: doc.name, motivo });
+      try {
+        await pool.query(`
+          INSERT INTO doc_metadata (doc_id, catalog_erro, catalogued_at)
+          VALUES ($1,$2,now())
+          ON CONFLICT (doc_id) DO UPDATE SET catalog_erro=$2
+        `, [doc.id, motivo]);
+        invalidateMetaCache();
+      } catch (e) { /* segue: o lote não pode parar por causa do registro */ }
     }
   }
   const status = await getCatalogStatus();
-  res.json({ processed, ...status });
+  res.json({ processed, erros, ...status });
 });
 
 app.get('/api/admin/settings', requireAdmin, async (req, res) => {
