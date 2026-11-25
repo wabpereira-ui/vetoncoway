@@ -337,10 +337,76 @@ function linhaPareceReferencia(linha) {
   const numerada = /^\s*(\[?\d{1,3}[\].)]|\d{1,3}\s*[-–])\s/.test(t);
   const temPagina = /\b\d{1,4}\s*[:(]\s*\d|\b\d+\s*[-–]\s*\d+\s*[.;]?\s*$/i.test(t);
   const autorInicial = /^\s*(\[?\d{1,3}[\].)]\s*)?[A-ZÀ-Ü][A-Za-zÀ-ü'\-]+(\s+[A-ZÀ-Ü][A-Za-zÀ-ü'\-]+)?(,|\s)(\s*[A-Z]{1,3}\b|[A-Z]\.)/.test(t);
-  if (temDoi) return true;
+  // DOI sozinho NÃO faz de uma linha uma referência: artigo real traz "https://doi.org/10..."
+  // no cabeçalho e no corpo. A citação se reconhece pelo CONJUNTO: numeração/sobrenome + ano +
+  // revista ou página. Era por isso que o melhor trecho do acervo estava sendo descartado.
+  const doiNumerado = /^\s*\[?\d{1,3}[\].)]/.test(t) && temDoi;
+  if (doiNumerado) return true;
   if (numerada && (temAno || temRevista)) return true;
   if (autorInicial && temAno && (temRevista || temPagina)) return true;
+  if (temRevista && temAno && temPagina) return true;
   return false;
+}
+
+// Conta SINAIS de citação num trecho inteiro. Uma lista de referências numa única linha corrida
+// ("...Vet Rec 2017;180:303. 14. Greenlee PG, ... Cancer 1990;66:480-90. 15. Marconato L...")
+// não parece uma citação quando olhada linha a linha — mas tem muitos sinais por trecho.
+// Vocabulario clinico em PT e EN. Decide se o trecho tem conduta, desfecho ou exame --
+// a unica evidencia de que ele serve para responder uma pergunta clinica. O acervo e
+// majoritariamente artigo em ingles: com a lista so em portugues, prosa clinica real tirava
+// nota ZERO e era descartada. Medido em 13 artigos: 49% dos trechos de corpo reprovados
+// eram exatamente isso.
+const RE_TERMO_CLINICO = /\b(remiss\w*|sobrevida|progn\w*|dose|doses|dosing|dosage|mg\s*\/?\s*kg|estadiamento|estadiar|subest\w*|tratamento|tratad\w*|protocolo|quimioterapia|cirurgia|recidiva|recaída|resposta|responderam|toler\w*|efeito\w*|toxic\w*|exame|diagn\w*|paciente|patients?|c[ãa]o|c[ãa]es|dogs?|gato|gatos|cats?|canine|feline|treatment|treatments|treated|treating|therapy|therapies|chemotherapy|chemotherapeutic|protocol|protocols|regimen|regimens|response|responded|responders|remission|remissions|relapse|relapsed|refractory|rescue|survival|prognosis|prognostic|diagnosis|diagnosed|staging|staged|toxicity|toxicoses|adverse|efficacy|outcome|outcomes|median|induction|maintenance|consolidation|neoplasia|tumou?r|lymphoma|carcinoma|sarcoma|mastocytoma|clinical|cycle|cycles|week|weeks|study|studies|group|groups)\b/i;
+const RE_REVISTA = /\b(J\s?Vet\s?(Intern|Emerg)?\s?Med|Vet\s?Comp\s?Oncol|Vet\s?Clin\s?North\s?Am|J\s?Am\s?Vet\s?Med\s?Assoc|J\s?Small\s?Anim\s?Pract|Vet\s?Rec|Vet\s?Pathol|Cancer\s?Res|J\s?Vet\s?Diagn\s?Invest|Front\s?Vet\s?Sci|BMC\s?Vet\s?Res|PLoS\s?One|Sci\s?Rep|Pesq\s?Vet\s?Bras|Arq\s?Bras\s?Med\s?Vet|Ci[eê]ncia\s?Rural|Acta\s?Sci\s?Vet|Res\s?Vet\s?Sci)\b/gi;
+function sinaisDeCitacao(texto) {
+  const t = String(texto || '');
+  return {
+    revistas: (t.match(RE_REVISTA) || []).length,
+    // "12):1179-1187." / "2001;42:377-384." — volume:páginas típico de citação
+    volumes: (t.match(/\b\d{1,4}\s*[:(]\s*\d{1,4}\s*[-–]\s*\d{1,4}/g) || []).length,
+    numeradas: (t.match(/(?:^|\s)(?:\[?\d{1,3}[\].)]|\d{1,3}\.)\s+[A-ZÀ-Ü][a-zà-ü]{2,}/g) || []).length,
+    doispontos: (t.match(/\bdoi\s*:\s*10\.|\b10\.\d{4,9}\//gi) || []).length,
+    // Faixa numerica no FIM do segmento e nunca seguida de unidade: "8-12 months", "12-35%"
+    // e "101-2127 days" sao faixas de texto clinico, nao intervalo de paginas. Antes eles
+    // contavam como pagina de artigo e ajudavam a reprovar o melhor material do acervo.
+    paginas: (t.match(/\b\d{1,4}\s*[-–]\s*\d{1,4}\s*(?:\(|$|[.;]\s|\n)/gm) || []).length
+  };
+}
+
+// O trecho é essencialmente bibliografia quando acumula sinais de citação e tem pouca prosa.
+// Conservador: só descarta com evidência forte, porque perder conteúdo clínico é pior.
+// Sinal de citação por mil caracteres. É a régua que não depende do tamanho do texto nem de
+// reconhecer linha a linha — mede o mesmo em um parágrafo e em uma página.
+function densidadeCitacao(texto) {
+  const t = String(texto || '');
+  if (!t.length) return 0;
+  const s = sinaisDeCitacao(t);
+  const pontos = s.revistas * 3 + s.volumes * 2 + s.numeradas + s.doispontos * 2 + s.paginas;
+  return pontos * 1000 / t.length;
+}
+
+function trechoEBibliografia(texto) {
+  const t = String(texto || '');
+  if (t.trim().length < 80) return false;
+  const s = sinaisDeCitacao(t);
+  // DENSIDADE, nao contagem absoluta: um trecho de 1.200 caracteres acumula sinais so por ser
+  // longo, e a contagem crua reprovava prosa clinica comprida. A bibliografia tem densidade
+  // alta; o corpo, baixa.
+  // Corpo de artigo real mede no máximo 0,9; bibliografia tem mediana 10,6. O limiar 6 fica no
+  // meio do vazio entre os dois — e, por ser densidade, vale igual para trecho curto e longo.
+  const densidade = densidadeCitacao(t);
+  // Prosa clinica: frase longa, com termo clinico e sem cara de citacao, nos dois idiomas.
+  const frases = t.split(/(?<=[.!?])\s+/).filter(f => f.trim().length > 40);
+  const prosaClinica = frases.filter(f => {
+    const semCitacao = !/doi|10\.\d{4,9}\//i.test(f) && sinaisDeCitacao(f).revistas === 0;
+    return semCitacao && RE_TERMO_CLINICO.test(f);
+  }).length;
+  if (prosaClinica >= 2) return false;          // tem prosa clinica: nao e so bibliografia
+  // Calibrado com parágrafos rotulados por XML (corpo x ref-list): limiar 4 remove 89% da
+  // bibliografia sem descartar um único parágrafo de corpo. Com 6, só 56% da bibliografia era
+  // removida — e uma lista de referências em linha corrida (que casa "treatment", "dogs",
+  // "lymphoma" nos títulos) passava inteira para o modelo.
+  return densidade >= 4;
 }
 
 // Um trecho tem conteúdo clínico quando traz conduta, desfecho, número ou medida — e não
@@ -349,6 +415,9 @@ function linhaPareceReferencia(linha) {
 function temConteudoClinico(texto) {
   const t = String(texto || '');
   if (t.trim().length < 60) return false;
+  // Se o trecho inteiro é bibliografia, não serve — e isso é decidido pelos sinais do TREINO
+  // de citação, não por linha (uma lista pode vir numa única linha corrida).
+  if (trechoEBibliografia(t)) return false;
   // Passo 1: tira as linhas que são citação. Um título de referência cita "dogs", "lymphoma"
   // e "CHOP" e parece frase clínica — é por isso que a decisão não pode ser tomada no texto cru.
   const linhas = t.split(/\n/).filter(l => l.trim());
@@ -356,7 +425,7 @@ function temConteudoClinico(texto) {
   if (corpo.length < 60) return false;
   // Passo 2: o que sobrou é prosa clínica?
   const frases = corpo.split(/(?<=[.!?])\s+/).filter(f => f.trim().length > 25);
-  const marcadores = /\b(remiss\w*|sobrevida|progn\w*|dose|mg\s*\/?\s*kg|estadiamento|estadiar|subest\w*|tratamento|protocolo|quimioterapia|cirurgia|recidiva|recaída|resposta|toler\w*|efeito\w*|toxic\w*|exame|diagn\w*|paciente|c[ãa]o|c[ãa]es|gato|gatos)\b/i;
+  const marcadores = RE_TERMO_CLINICO;
   const comClinica = frases.filter(f => marcadores.test(f)).length;
   const comNumero = frases.filter(f => /\d/.test(f)).length;
   if (comClinica >= 2) return true;
@@ -365,7 +434,7 @@ function temConteudoClinico(texto) {
 }
 
 function separarBibliografia(texto) {
-  if (!texto) return { corpo: '', refs: '' };
+  if (!texto) return { corpo: '', refs: '', corteConfiavel: false };
   const bruto = String(texto);
   // 1) Se existe um cabeçalho de referências na METADE FINAL do documento, corta ali.
   //    (Na metade final de propósito: "Referências" citado no meio do texto não deve cortar.)
@@ -373,15 +442,24 @@ function separarBibliografia(texto) {
   //    ser 80% do texto e começar cedo): é o CONTEÚDO depois dele se parecer com bibliografia.
   const re = new RegExp(CABECALHO_REFS.source, 'gim');
   let m;
+  // Entre os cabeçalhos aceitáveis, escolhe o MAIS PROFUNDO. Um artigo pode citar
+  // "References" no meio (numa seção, numa tabela) e o corte no primeiro deles decepava o
+  // corpo: medido num artigo real, sobravam 42 trechos de 181. A bibliografia é a última.
+  let melhor = null;
   while ((m = re.exec(bruto)) !== null) {
     const corpo = bruto.slice(0, m.index);
     const refs = bruto.slice(m.index);
     if (refs.length < bruto.length * 0.08) continue;          // cauda curta demais: não é bibliografia
     const linhas = refs.split(/\n+/).filter(l => l.trim());
     if (linhas.length < 3) continue;
-    const parecidas = linhas.filter(l => linhaPareceReferencia(l)).length;
-    if (parecidas / linhas.length >= 0.5) return { corpo, refs };
+    // A aceitação NÃO pode depender de reconhecer linha a linha: a própria linha do cabeçalho
+    // ("REFERENCES") não parece referência, e a bibliografia real vem quebrada em várias linhas
+    // por citação. Medido em 18 artigos, era por isso que 13 tinham o corte recusado.
+    // A densidade de sinal de citação separa com folga: corpo no máximo 0,9 por mil caracteres,
+    // bibliografia com mediana 10,6.
+    if (densidadeCitacao(refs) >= 4) melhor = { corpo, refs, corteConfiavel: true };
   }
+  if (melhor) return melhor;
   let corte = -1;
   // 2) Sem cabeçalho confiável: remove as linhas soltas que claramente são citação,
   //    mantendo o resto (um artigo pode ter referência no rodapé de cada página).
@@ -393,39 +471,71 @@ function separarBibliografia(texto) {
     else mantidas.push(l);
   }
   // Proteção: se o filtro fosse levar mais de metade do texto, ele está errado — mantém tudo.
-  if (descartadas.join('').length > bruto.length * 0.5) return { corpo: bruto, refs: '' };
-  return { corpo: mantidas.join('\n'), refs: descartadas.join('\n') };
+  if (descartadas.join('').length > bruto.length * 0.5) return { corpo: bruto, refs: '', corteConfiavel: false };
+  // Remocao de linha solta NAO e corte estrutural: o documento segue misturado e o trecho
+  // ainda precisa ser julgado.
+  return { corpo: mantidas.join('\n'), refs: descartadas.join('\n'), corteConfiavel: false };
+}
+
+// Registra na ficha por que este material ficou fora do índice. É o que tira o documento da
+// fila — sem isso ele é escolhido de novo em toda rodada e a indexação do acervo para.
+async function marcarDispensa(docId, motivo) {
+  try {
+    await pool.query(`
+      INSERT INTO doc_metadata (doc_id, sem_indexacao_motivo, catalogued_at)
+      VALUES ($1,$2,now())
+      ON CONFLICT (doc_id) DO UPDATE SET sem_indexacao_motivo=$2
+    `, [docId, motivo]);
+    invalidateMetaCache();
+  } catch (e) {
+    console.error('Indexação: não consegui registrar a dispensa de', docId, e.message);
+  }
 }
 
 async function indexDocument(doc) {
   if (!useDb || !pgvectorReady || !embeddingConfigured()) return 0;
-  const { corpo, refs } = separarBibliografia(doc.text);
+  const { corpo, refs, corteConfiavel } = separarBibliografia(doc.text);
   // Trava de segurança: se o corte deixou menos de um quarto do texto, o filtro errou o alvo
   // (artigo com estrutura incomum). Nesse caso indexa o texto inteiro — melhor índice ruim do
   // que índice sem o conteúdo clínico, que é o que deixaria o aluno sem resposta.
   // Documento que é essencialmente lista de referências não serve para responder nada:
   // não entra no índice. Antes ele entrava inteiro e ocupava as primeiras posições da busca.
   if (!temConteudoClinico(doc.text)) {
-    // Registra o motivo para o documento SAIR da fila. Sem isso ele é escolhido de novo em
-    // toda rodada e a indexação do acervo inteiro para, porque a fila nunca avança.
     const motivo = String(doc.text || '').trim().length < 200
-      ? 'texto muito curto para indexar'
+      ? 'texto muito curto para indexar (' + String(doc.text || '').trim().length + ' caracteres)'
       : 'sem conteúdo clínico (só referências)';
-    await pool.query(`
-      INSERT INTO doc_metadata (doc_id, sem_indexacao_motivo, catalogued_at)
-      VALUES ($1,$2,now())
-      ON CONFLICT (doc_id) DO UPDATE SET sem_indexacao_motivo=$2
-    `, [doc.id, motivo]);
-    invalidateMetaCache();
+    await marcarDispensa(doc.id, motivo);
     console.warn('Indexação: ' + doc.name + ' — dispensado: ' + motivo + '.');
     return 0;
   }
-  const corpoTemClinica = temConteudoClinico(corpo);
-  const usarCorpo = corpoTemClinica && corpo.length >= Math.max(200, doc.text.length * 0.15);
-  if (refs && usarCorpo) console.log('Indexação: ' + doc.name + ' — bibliografia separada (' + refs.length + ' caracteres fora do índice).');
-  else if (refs && !usarCorpo) console.warn('Indexação: ' + doc.name + ' — corte de bibliografia descartado (o corpo ficaria sem conteúdo clínico). Indexando o texto completo.');
-  const trechos = chunkText(usarCorpo ? corpo : doc.text);
-  if (!trechos.length) return 0;
+  // DECISAO ESTRUTURAL (medida em 13 artigos reais): um trecho de 1.200 caracteres nao tem
+  // informacao suficiente para dizer se e prosa clinica ou lista de citacao — o documento tem.
+  // Julgar trecho a trecho errava nos dois sentidos ao mesmo tempo: reprovava 17% do corpo
+  // real E deixava passar 45% das referencias. Entao:
+  //   · corte de bibliografia CONFIAVEL -> indexa o corpo inteiro. Dentro do corpo o trecho e
+  //     clinico por construcao, e as referencias ja estao fora. Nao se julga trecho.
+  //   · sem corte confiavel -> o documento esta misturado; ai sim o portao por trecho age,
+  //     porque e o unico recurso disponivel.
+  const temCorte = corteConfiavel && corpo.length >= Math.max(200, doc.text.length * 0.15);
+  let trechos;
+  if (temCorte) {
+    trechos = chunkText(corpo);
+    console.log('Indexação: ' + doc.name + ' — bibliografia separada por estrutura (' +
+      refs.length + ' caracteres fora do índice, ' + trechos.length + ' trechos do corpo).');
+  } else {
+    // Sem corte: o portao por trecho protege o que da, e o que ele nao pega e aceito — melhor
+    // um trecho de referencia a mais do que um acervo que perde um quinto do conteudo clinico.
+    trechos = chunkText(doc.text).filter(t => temConteudoClinico(t));
+  }
+  // Este era o caminho silencioso: devolvia 0 sem erro, o documento voltava à fila para sempre
+  // e o painel não mostrava nada, porque tecnicamente não houve falha.
+  if (!trechos.length) {
+    const motivo = 'texto não gerou nenhum trecho indexável (' +
+      String(doc.text || '').trim().length + ' caracteres)';
+    await marcarDispensa(doc.id, motivo);
+    console.warn('Indexação: ' + doc.name + ' — dispensado: ' + motivo + '.');
+    return 0;
+  }
   const vetores = await embedTexts(trechos, 'document');
   await pool.query('DELETE FROM doc_chunks WHERE doc_id=$1', [doc.id]);
   const LOTE = 25;   // inserção em bloco: menos ida e volta ao banco
@@ -2404,6 +2514,8 @@ const HISTORY_MAX_MESSAGES = 16; // 8 trocas (pergunta+resposta) de memória por
 // linhas de citação, que não têm conduta nenhuma e fazem o modelo achar que o material é vazio.
 function limparTrechoParaContexto(texto) {
   const t = String(texto || '');
+  // Trecho que é só bibliografia sai inteiro: não ocupa vaga no contexto que vai ao modelo.
+  if (trechoEBibliografia(t)) return '';
   const linhas = t.split(/\n/);
   const mantidas = linhas.filter(l => !linhaPareceReferencia(l));
   const limpo = mantidas.join('\n').replace(/\n{3,}/g, '\n\n').trim();
@@ -2419,10 +2531,14 @@ function montarContexto(trechos) {
   const uteis = trechos
     .map(c => ({ ...c, limpo: limparTrechoParaContexto(c.text) }))
     .filter(c => c.limpo.length > 40);
-  // Se TODOS os trechos eram bibliografia, entrega os originais: contexto vazio faria o
-  // modelo responder "não tenho material" para uma pergunta que o acervo cobre.
-  const lista = uteis.length ? uteis : trechos.map(c => ({ ...c, limpo: String(c.text || '').trim() }));
-  return lista.map(c => `[Fonte: ${c.source}]\n${c.limpo}`).join('\n\n---\n\n');
+  // Se TODOS os trechos eram bibliografia, o contexto vai VAZIO — de propósito.
+  // Antes eu devolvia os originais "para não dizer que o acervo não cobre", e foi assim que o
+  // modelo recebeu listas de referências e respondeu "os trechos trazem só referências, sem
+  // dado clínico": a resposta honesta existia e o que faltava era o conteúdo. Contexto vazio
+  // faz o modelo dizer que não encontrou material — verdade — em vez de analisar citações e
+  // concluir que o acervo é vazio.
+  if (!uteis.length) return '';
+  return uteis.map(c => `[Fonte: ${c.source}]\n${c.limpo}`).join('\n\n---\n\n');
 }
 
 function buildTurnContent(question, contextBlock, images, examTexts) {
@@ -2695,7 +2811,7 @@ app.post('/api/admin/index-batch', requireAdmin, async (req, res) => {
     }
   }
   const status = await getIndexStatus();
-  res.json({ processados, trechos, erros, ...status });
+  res.json({ processados, dispensadosRodada: dispensados, trechos, erros, ...status });
 });
 
 // Processa um lote de artigos ainda não catalogados (a mentora pode clicar de novo até
