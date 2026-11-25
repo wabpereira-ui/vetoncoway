@@ -371,8 +371,13 @@ function separarBibliografia(texto) {
 async function indexDocument(doc) {
   if (!useDb || !pgvectorReady || !embeddingConfigured()) return 0;
   const { corpo, refs } = separarBibliografia(doc.text);
-  if (refs) console.log('Indexação: ' + doc.name + ' — bibliografia separada (' + refs.length + ' caracteres fora do índice).');
-  const trechos = chunkText(corpo.length > 200 ? corpo : doc.text);
+  // Trava de segurança: se o corte deixou menos de um quarto do texto, o filtro errou o alvo
+  // (artigo com estrutura incomum). Nesse caso indexa o texto inteiro — melhor índice ruim do
+  // que índice sem o conteúdo clínico, que é o que deixaria o aluno sem resposta.
+  const usarCorpo = corpo.length >= Math.max(200, doc.text.length * 0.25);
+  if (refs && !usarCorpo) console.warn('Indexação: ' + doc.name + ' — corte de bibliografia descartado (deixaria só ' + corpo.length + ' de ' + doc.text.length + ' caracteres). Indexando o texto completo.');
+  else if (refs) console.log('Indexação: ' + doc.name + ' — bibliografia separada (' + refs.length + ' caracteres fora do índice).');
+  const trechos = chunkText(usarCorpo ? corpo : doc.text);
   if (!trechos.length) return 0;
   const vetores = await embedTexts(trechos, 'document');
   await pool.query('DELETE FROM doc_chunks WHERE doc_id=$1', [doc.id]);
@@ -2431,6 +2436,36 @@ app.get('/api/admin/catalog-status', requireAdmin, async (req, res) => {
 });
 
 // ---- Indexação semântica (busca por sentido) ----
+// Teste de busca: roda a MESMA função que o app usa e devolve os trechos que seriam enviados
+// ao modelo. É o que separa "a busca não achou" de "achou e o modelo respondeu mal" — sem
+// isto, as duas causas produzem a mesma frase para o aluno e não há como distinguir.
+app.get('/api/admin/search-test', requireAdmin, async (req, res) => {
+  const pergunta = String(req.query.q || '').trim();
+  if (!pergunta) return res.status(400).json({ error: 'Informe a pergunta (?q=...).' });
+  try {
+    const docs = await loadDocs();
+    const inicio = Date.now();
+    const trechos = await retrieveContext(pergunta, docs, 6);
+    const meta = await loadMetadataMap();
+    res.json({
+      pergunta,
+      ms: Date.now() - inicio,
+      semantica: Boolean(pgvectorReady && embeddingConfigured()),
+      encontrados: trechos.length,
+      trechos: trechos.map(c => ({
+        fonte: c.source,
+        similaridade: Number((c.sim || 0).toFixed(3)),
+        score: Number((c.score || 0).toFixed(3)),
+        especie: (meta[c.docId] && meta[c.docId].especie) || '',
+        caracteres: c.text.length,
+        texto: c.text.slice(0, 400)
+      }))
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/admin/index-status', requireAdmin, async (req, res) => {
   try { res.json(await getIndexStatus()); }
   catch (e) { res.status(500).json({ error: e.message }); }
